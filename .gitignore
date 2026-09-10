@@ -1,0 +1,60 @@
+# ===== Secrets & local env（密钥/本地环境变量，禁止入库）=====
+.env
+.env.*
+!.env.example
+*.env
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 本地配置（可能含密钥，仅保留 .example）=====
+config.yaml
+mcp_servers.json
+models_config.json
+
+# ===== 运行时状态 / 数据库（本地持久化，禁止入库）=====
+*.db
+*.sqlite
+*.sqlite3
+runs.db
+.agent_state.json
+.agent_state.json.tmp
+agent_memory.*
+latest_vision.jpg
+
+# ===== 生成物 / 报告（运行时产生，禁止入库）=====
+projects/
+projects_dashboard.html
+test_report_index.html
+report_*
+*.latest_vision.jpg
+
+# ===== 桌面端打包产物（本仓库以 Web 端为主，桌面 exe 不入库）=====
+dist/
+build/
+*.spec
+launch_desktop.bat
+launch_desktop_appmode.bat
+run_desktop.py
+
+# ===== IDE / OS =====
+.idea/
+.vscode/
+.DS_Store
+
+# ===== 本地工作区数据（绝对不入库，也切勿删除）=====
+.workbuddy/
+
+# ===== 预览截图（本地验证用，不入库）=====
+web_console/static/*.png
+*.png.bak
+
+# ===== 基座仓库的 agent 状态文件 =====
+auth.json

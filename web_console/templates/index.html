@@ -1,0 +1,1550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>软件测试智能体 · 控制台</title>
+<style>
+:root{
+  --ink:#0f172a; --ink-2:#1e293b; --text:#0f172a; --muted:#64748b; --muted-2:#94a3b8;
+  --bg:#f6f8fb; --panel:#ffffff; --border:#e6eaf0; --border-2:#eef2f7;
+  --primary:#6366f1; --primary-600:#4f46e5; --primary-soft:#eef2ff;
+  --ok:#059669; --ok-soft:#d1fae5; --bad:#dc2626; --bad-soft:#fee2e2;
+  --warn:#d97706; --warn-soft:#fef3c7; --info:#2563eb; --info-soft:#dbeafe;
+  --purple:#7c3aed; --purple-soft:#f3e8ff;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.05);
+  --shadow-md:0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.07);
+  --radius:14px; --radius-sm:9px;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
+svg{display:block;}
+
+/* ---------------- Sidebar ---------------- */
+.sidebar{width:250px;flex-shrink:0;background:linear-gradient(180deg,#0f172a 0%,#111c33 100%);color:#cbd5e1;display:flex;flex-direction:column;}
+.brand{display:flex;align-items:center;gap:11px;padding:18px 18px 16px;border-bottom:1px solid rgba(148,163,184,.12);}
+.brand-logo{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(99,102,241,.45);flex-shrink:0;}
+.brand-name{font-size:15.5px;font-weight:700;color:#fff;letter-spacing:.2px;}
+.brand-sub{font-size:11px;color:#7c8aa5;margin-top:1px;letter-spacing:.4px;}
+.nav{padding:14px 12px;flex:1;overflow-y:auto;}
+.nav-group{font-size:10.5px;font-weight:700;letter-spacing:1.2px;color:#5b6b85;text-transform:uppercase;padding:14px 12px 7px;}
+.nav-item{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;color:#aeb9cc;margin-bottom:3px;transition:background .15s,color .15s;position:relative;}
+.nav-item:hover{background:rgba(148,163,184,.1);color:#fff;}
+.nav-item.active{background:linear-gradient(90deg,rgba(99,102,241,.22),rgba(99,102,241,.06));color:#fff;}
+.nav-item.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--primary);}
+.nav-item .ico{width:19px;height:19px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:inherit;}
+.nav-item .ico svg{width:19px;height:19px;}
+.side-foot{padding:14px 18px;border-top:1px solid rgba(148,163,184,.12);font-size:11px;color:#6b7b96;line-height:1.7;}
+.status-line{display:flex;align-items:center;gap:7px;}
+.dot{width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.18);}
+.side-foot code{font-family:var(--mono);color:#8ea0bd;font-size:10.5px;}
+
+/* ---------------- Main ---------------- */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.topbar{display:flex;align-items:center;gap:16px;padding:14px 26px;background:var(--panel);border-bottom:1px solid var(--border);}
+.crumb{display:flex;flex-direction:column;min-width:0;}
+.crumb h1{font-size:17px;font-weight:700;letter-spacing:.2px;}
+.crumb .sub{font-size:12px;color:var(--muted);margin-top:2px;}
+.spacer{flex:1;}
+.search{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:0 12px;height:38px;width:240px;transition:border-color .15s,box-shadow .15s;}
+.search:focus-within{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+.search svg{width:16px;height:16px;color:var(--muted-2);flex-shrink:0;}
+.search input{border:none;background:none;outline:none;font-family:inherit;font-size:13px;color:var(--text);width:100%;}
+.top-actions{display:flex;gap:10px;align-items:center;}
+.content{flex:1;overflow-y:auto;padding:26px;}
+.page{display:none;}
+.page.active{display:block;animation:fadeUp .35s ease both;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+/* ---------------- Buttons ---------------- */
+.btn{border:1px solid var(--border);background:var(--panel);color:var(--text);padding:8px 15px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit;white-space:nowrap;display:inline-flex;align-items:center;gap:7px;}
+.btn svg{width:15px;height:15px;}
+.btn:hover{border-color:var(--primary);color:var(--primary-600);background:var(--primary-soft);}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff;}
+.btn.primary:hover{background:var(--primary-600);border-color:var(--primary-600);color:#fff;}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted);}
+.btn.ghost:hover{background:var(--bg);color:var(--text);border-color:var(--border);}
+.btn.sm{padding:6px 11px;font-size:12px;border-radius:8px;}
+.btn.sm svg{width:13px;height:13px;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn.block{width:100%;justify-content:center;}
+
+/* ---------------- Summary strip ---------------- */
+.summary{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;min-width:150px;flex:1;box-shadow:var(--shadow-sm);}
+.stat .k{font-size:12px;color:var(--muted);font-weight:600;}
+.stat .v{font-size:26px;font-weight:800;margin-top:4px;letter-spacing:-.5px;}
+.stat .v.s-ok{color:var(--ok);} .stat .v.s-bad{color:var(--bad);} .stat .v.s-info{color:var(--info);} .stat .v.s-purple{color:var(--purple);}
+
+.section-title{font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin:0 0 14px;}
+.empty{text-align:center;color:var(--muted);padding:70px 0;font-size:14px;}
+.empty svg{width:42px;height:42px;color:var(--muted-2);margin:0 auto 14px;}
+
+/* ---------------- Project cards ---------------- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s,border-color .2s;display:flex;flex-direction:column;gap:11px;}
+.card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px);border-color:#d6deea;}
+.card .head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+.card .title{font-size:15.5px;font-weight:700;letter-spacing:.2px;}
+.card .pid{font-size:12px;color:var(--muted);font-family:var(--mono);margin-top:2px;}
+.card .meta{font-size:12.5px;color:var(--muted);line-height:1.85;}
+.card .meta code{background:var(--bg);padding:1px 6px;border-radius:5px;font-family:var(--mono);font-size:11px;color:var(--ink-2);}
+.card .ops{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px;}
+
+/* ---------------- Badges ---------------- */
+.badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;letter-spacing:.2px;}
+.badge.ok{background:var(--ok-soft);color:var(--ok);}
+.badge.bad{background:var(--bad-soft);color:var(--bad);}
+.badge.skip{background:var(--warn-soft);color:var(--warn);}
+.badge.none{background:var(--bg);color:var(--muted);}
+.badge.info{background:var(--info-soft);color:var(--info);}
+.badge.purple{background:var(--purple-soft);color:var(--purple);}
+.badge.gray{background:var(--border-2);color:var(--muted);}
+.chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:6px;background:var(--bg);color:var(--ink-2);font-weight:600;}
+.chip.get{background:#e0f2fe;color:#0369a1;} .chip.post{background:#fae8ff;color:#a21caf;}
+.chip.put{background:#fef3c7;color:#b45309;} .chip.del{background:#fee2e2;color:#b91c1c;}
+
+/* ---------------- Tasks ---------------- */
+.task-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
+.task-bar select{border:1px solid var(--border);border-radius:9px;padding:8px 12px;font-size:13px;font-family:inherit;outline:none;background:var(--panel);transition:border-color .15s,box-shadow .15s;color:var(--text);}
+.task-bar select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+.task-item{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:11px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;box-shadow:var(--shadow-sm);}
+.task-item:hover{border-color:#d6deea;}
+.task-item .t-main{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 320px;}
+.task-item .t-kind{font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px;}
+.task-item .t-meta{font-size:11.5px;color:var(--muted);font-family:var(--mono);}
+.task-item .t-side{display:flex;gap:10px;align-items:center;flex-shrink:0;}
+.task-item>.log-panel{flex:1 0 100%;margin-top:12px;}
+.log-panel{background:#0b1021;color:#d1fae5;border-radius:12px;padding:16px 18px;font-family:var(--mono);font-size:12px;line-height:1.7;max-height:340px;overflow-y:auto;white-space:pre-wrap;display:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04);}
+.log-panel.show{display:block;animation:fadeUp .3s ease both;}
+/* 任务按项目分组 */
+.task-group{background:var(--bg);border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden;}
+.tg-head{display:flex;align-items:center;gap:10px;padding:11px 16px;cursor:pointer;user-select:none;}
+.tg-head:hover{background:rgba(255,255,255,.03);}
+.tg-caret{display:inline-block;width:0;height:0;border-left:4.5px solid var(--text);border-top:4px solid transparent;border-bottom:4px solid transparent;transform:rotate(90deg);transition:transform .18s ease;flex-shrink:0;}
+.task-group.collapsed .tg-caret{transform:rotate(0deg);}
+.tg-name{font-size:13px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.tg-stats{display:flex;gap:6px;flex-shrink:0;}
+.tg-stat{font-size:11px;padding:1.5px 7px;border-radius:20px;font-family:var(--mono);}
+.tg-stat.ok{background:rgba(16,185,129,.14);color:var(--ok);}
+.tg-stat.bad{background:rgba(239,68,68,.14);color:var(--bad);}
+.tg-stat.skip{background:rgba(245,158,11,.14);color:var(--warn,#f59e0b);}
+.tg-stat.gray{background:rgba(148,163,184,.14);color:var(--muted);}
+.tg-last{font-size:11.5px;color:var(--muted);font-family:var(--mono);flex-shrink:0;}
+.tg-body{padding:0 12px 12px;}
+.task-group.collapsed .tg-body{display:none;}
+.tg-body .task-item{margin-bottom:8px;background:var(--panel);}
+
+/* ---------------- Reports ---------------- */
+.rep-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow-sm);}
+.rep-card .rh{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;cursor:pointer;flex-wrap:wrap;}
+.rep-card .rname{font-size:15px;font-weight:700;}
+.rep-card .renv{font-size:12px;color:var(--muted);font-family:var(--mono);margin-top:2px;}
+.rep-card .rsum{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:9px;font-size:12.5px;color:var(--muted);}
+.rep-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12.5px;display:none;}
+.rep-table.show{display:table;animation:fadeUp .3s ease both;}
+.rep-table th{text-align:left;color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
+.rep-table td{padding:10px;border-bottom:1px solid var(--border-2);vertical-align:top;}
+.rep-table tr:hover td{background:var(--bg);}
+.rep-table .sc-name{font-weight:600;color:var(--text);}
+.rep-table .sc-url{font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all;max-width:300px;}
+.rep-table .sc-detail{font-size:11.5px;color:var(--bad);margin-top:4px;font-family:var(--mono);white-space:pre-wrap;max-width:320px;}
+.rep-table th.op,.rep-table td.op{text-align:right;white-space:nowrap;width:1%;}
+/* 重跑中：按钮进入忙碌态，防重复点击 */
+.btn.sm.busy{opacity:.6;pointer-events:none;}
+/* 趋势 */
+.trend-card{margin-bottom:16px;}
+.trend-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;}
+.trend-svg{width:100%;height:auto;display:block;margin-top:6px;overflow:visible;}
+.trend-svg .grid{stroke:var(--border);stroke-width:1;}
+.trend-svg .ax{fill:var(--muted);font-size:9px;text-anchor:end;font-family:var(--mono);}
+.trend-svg .xl{fill:var(--muted);font-size:9px;font-family:var(--mono);}
+.trend-svg .line{fill:none;stroke:var(--ok);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;}
+.sel{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12.5px;font-family:inherit;}
+/* 分段切换：单项目 / 跨项目对比 */
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.seg-btn{background:var(--bg);color:var(--muted);border:0;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;}
+.seg-btn+.seg-btn{border-left:1px solid var(--border);}
+.seg-btn.active{background:var(--accent,#4f46e5);color:#fff;}
+/* 图例 */
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;}
+.legend .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+.legend .sw{width:10px;height:10px;border-radius:3px;display:inline-block;}
+/* 已停用项目：整卡弱化 + 角标 */
+.card.disabled{opacity:.62;}
+.card.disabled .title::after{content:' · 已停用';color:var(--muted);font-weight:500;font-size:12px;}
+.btn.sm.danger{color:var(--bad);}
+/* 不稳定场景洞察 */
+.ins-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--border-2);}
+.ins-row:last-child{border-bottom:0;}
+.ins-left{min-width:0;flex:1;}
+.ins-name{font-size:13px;font-weight:600;}
+.ins-meta{font-size:11.5px;color:var(--muted);font-family:var(--mono);margin-top:2px;}
+.ins-bar{height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:6px;max-width:320px;}
+.ins-bar>i{display:block;height:100%;background:var(--bad);}
+/* 场景历史小方块 */
+.dots{display:inline-flex;align-items:center;gap:3px;margin-left:6px;vertical-align:middle;}
+.dot{display:inline-block;width:8px;height:8px;border-radius:2px;}
+.dot.pass{background:var(--ok);}
+.dot.fail{background:var(--bad);}
+.dot.skip{background:var(--warn);}
+.dot.none{background:var(--border);}
+/* 轻量提示条 */
+.toast{position:fixed;right:22px;bottom:22px;z-index:200;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none;}
+.toast .t-item{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--info, #6366f1);border-radius:10px;padding:10px 14px;font-size:12.5px;color:var(--text);box-shadow:var(--shadow, 0 4px 16px rgba(0,0,0,.12));animation:fadeUp .25s ease both;max-width:360px;}
+.toast .t-item.ok{border-left-color:var(--ok, #10b981);}
+.toast .t-item.bad{border-left-color:var(--bad, #ef4444);}
+.toast .t-item.warn{border-left-color:var(--warn, #f59e0b);}
+.rep-frame-wrap{display:flex;flex-direction:column;padding:0;overflow:hidden;height:88vh;width:min(1200px,96vw);border-radius:18px;}
+.rep-frame-wrap .bar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);flex-shrink:0;background:linear-gradient(180deg,#fff 0%,var(--panel) 100%);}
+.rep-frame-wrap .bar .bar-title{display:flex;align-items:center;gap:10px;}
+.rep-frame-wrap .bar h2{margin:0;font-size:16px;font-weight:800;color:var(--ink);letter-spacing:.2px;}
+.rep-frame-wrap .bar .bar-sub{font-size:12px;color:var(--muted);font-weight:500;}
+.rep-frame-wrap .bar .bar-actions{display:flex;gap:9px;align-items:center;}
+.rep-frame-wrap iframe{flex:1;border:0;width:100%;background:var(--bg);}
+/* 覆盖 .modal 默认 580px 宽度 */
+.modal.rep-frame-wrap{width:min(1200px,96vw);max-width:96vw;}
+
+/* ---------------- Automation ---------------- */
+.auto-proj{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow-sm);}
+.auto-proj .ph{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;}
+.auto-proj .pname{font-size:15px;font-weight:700;}
+.auto-proj .penv{font-size:12px;color:var(--muted);font-family:var(--mono);margin-top:2px;}
+.scn{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:10px;transition:background .15s;}
+.scn:hover{background:var(--bg);}
+.scn + .scn{border-top:1px solid var(--border-2);}
+.scn .sname{font-size:13.5px;font-weight:600;flex:1;min-width:0;}
+.scn .sroute{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:2px;}
+
+/* ---------------- Knowledge ---------------- */
+.kb{display:flex;gap:18px;align-items:stretch;height:calc(100vh - 200px);min-height:420px;}
+.kb-list{width:260px;flex-shrink:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;padding:8px;box-shadow:var(--shadow-sm);}
+.kb-item{padding:12px 14px;border-radius:10px;cursor:pointer;transition:background .15s;margin-bottom:3px;}
+.kb-item:hover{background:var(--bg);}
+.kb-item.active{background:var(--primary-soft);}
+.kb-item .t{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-all;line-height:1.4;}
+.kb-item .m{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--mono);}
+.kb-pane{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow-y:auto;padding:30px 38px;box-shadow:var(--shadow-sm);min-width:0;}
+.kb-pane .placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--muted);gap:12px;text-align:center;}
+.kb-pane .placeholder svg{width:46px;height:46px;color:var(--muted-2);}
+
+/* Markdown */
+.md-h1{font-size:25px;font-weight:800;margin:6px 0 16px;letter-spacing:-.3px;}
+.md-h2{font-size:19px;font-weight:700;margin:26px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--border);}
+.md-h3{font-size:15.5px;font-weight:700;margin:20px 0 8px;}
+.md-h4{font-size:14px;font-weight:700;margin:14px 0 6px;color:var(--ink-2);}
+.md-p{font-size:14px;line-height:1.85;color:var(--ink-2);margin:10px 0;}
+.md-ul,.md-ol{margin:10px 0;padding-left:22px;font-size:14px;line-height:1.8;color:var(--ink-2);}
+.md-ul li,.md-ol li{margin:4px 0;}
+.md-code{background:#0b1021;color:#e2e8f0;border-radius:10px;padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.65;margin:14px 0;}
+.md-code code{font-family:var(--mono);}
+.md-p code,.md-li code{background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:5px;font-family:var(--mono);font-size:12.5px;color:#be123c;}
+.md-p a{color:var(--primary-600);text-decoration:none;border-bottom:1px solid var(--primary-soft);}
+
+/* ---------------- Skills ---------------- */
+.skill-row{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:11px;display:flex;justify-content:space-between;align-items:center;gap:16px;box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s;}
+.skill-row:hover{box-shadow:var(--shadow-md);transform:translateY(-1px);}
+.skill-row .name{font-weight:700;font-size:14.5px;display:flex;align-items:center;gap:9px;}
+.skill-row .dir{font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:400;}
+.skill-row .desc{font-size:12.5px;color:var(--muted);margin-top:5px;line-height:1.55;max-width:560px;}
+.switch{position:relative;width:42px;height:24px;flex-shrink:0;cursor:pointer;}
+.switch input{display:none;}
+.switch .track{position:absolute;inset:0;background:#cbd5e1;border-radius:999px;transition:.2s;}
+.switch .knob{position:absolute;top:3px;left:3px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.25);}
+.switch input:checked ~ .track{background:var(--ok);}
+.switch input:checked ~ .knob{left:21px;}
+
+/* ---------------- Models ---------------- */
+.model-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;}
+.model-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow-sm);}
+.model-card h3{font-size:14px;font-weight:700;display:flex;align-items:center;gap:9px;margin-bottom:4px;}
+.model-card .provider-sub{font-size:12px;color:var(--muted);margin-bottom:16px;}
+.key-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid var(--border-2);font-size:13px;}
+.key-row .label{font-weight:600;}
+.key-state{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;}
+.key-state.on{color:var(--ok);} .key-state.off{color:var(--muted);}
+.kdot{width:8px;height:8px;border-radius:50%;}
+.kdot.on{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);}
+.kdot.off{background:#cbd5e1;}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
+.field label{font-size:12px;color:var(--muted);font-weight:600;}
+.field input,.field select{border:1px solid var(--border);border-radius:9px;padding:9px 12px;font-size:13px;font-family:inherit;outline:none;background:var(--panel);transition:border-color .15s,box-shadow .15s;}
+.field input:focus,.field select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+.note{background:var(--info-soft);border:1px solid #bfdbfe;color:#1e40af;border-radius:10px;padding:12px 14px;font-size:12.5px;line-height:1.6;margin-top:14px;}
+.note code{font-family:var(--mono);background:rgba(255,255,255,.6);padding:1px 6px;border-radius:4px;}
+
+/* ---------------- Modal ---------------- */
+.mask{display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;align-items:flex-start;justify-content:center;overflow-y:auto;padding:48px 16px;backdrop-filter:blur(2px);}
+.mask.show{display:flex;animation:fadeUp .2s ease both;}
+.modal{background:var(--panel);border-radius:16px;width:580px;max-width:100%;padding:26px;box-shadow:0 24px 60px rgba(15,23,42,.3);}
+.modal h2{font-size:17px;font-weight:700;margin-bottom:18px;}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px 14px;}
+.field.full{grid-column:1/-1;}
+.field textarea{border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-size:13px;font-family:inherit;outline:none;resize:vertical;min-height:120px;line-height:1.6;transition:border-color .15s,box-shadow .15s;}
+.field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+.field textarea.mono{font-family:var(--mono);font-size:12px;line-height:1.7;}
+.modal .foot{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
+.err-msg{display:none;background:var(--bad-soft);color:var(--bad);font-size:12.5px;border-radius:9px;padding:9px 13px;margin-top:14px;font-weight:500;}
+.tab-row{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
+.btn.tab.active{background:var(--primary-soft);border-color:var(--primary);color:var(--primary-600);}
+.hint{font-size:12px;color:var(--muted);line-height:1.6;}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+    </div>
+    <div>
+      <div class="brand-name">测试智能体</div>
+      <div class="brand-sub">TestAgent Console</div>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-group">工作区</div>
+    <div class="nav-item active" data-page="projects">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>项目
+    </div>
+    <div class="nav-item" data-page="tasks">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><line x1="3" y1="8" x2="3" y2="8"/><line x1="3" y1="14" x2="3" y2="14"/></svg></span>任务
+    </div>
+    <div class="nav-item" data-page="reports">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="15"/></svg></span>报告
+    </div>
+    <div class="nav-item" data-page="automation">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>自动化
+    </div>
+    <div class="nav-group">资源</div>
+    <div class="nav-item" data-page="knowledge">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>资料库
+    </div>
+    <div class="nav-item" data-page="skills">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 4.8L20 8l-4 3.9.9 5.6L12 14.8 7.1 17.5 8 11.9 4 8l5.6-1.2z"/></svg></span>技能
+    </div>
+    <div class="nav-group">系统</div>
+    <div class="nav-item" data-page="models">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>模型维护
+    </div>
+  </nav>
+  <div class="side-foot">
+    <div class="status-line"><span class="dot"></span> 后端在线</div>
+    <div style="margin-top:6px">基座：agentic-test-explorer<br><code>python project_manager.py</code></div>
+  </div>
+</aside>
+
+<div class="main">
+  <header class="topbar">
+    <div class="crumb">
+      <h1 id="pageTitle">项目</h1>
+      <div class="sub" id="pageSub">公司项目与测试环境</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="searchInput" placeholder="搜索…" oninput="applySearch()">
+    </div>
+    <div class="top-actions" id="topActions"></div>
+  </header>
+
+  <main class="content">
+    <!-- 项目 -->
+    <section class="page active" id="page-projects">
+      <div class="summary" id="projSummary"></div>
+      <div class="grid" id="projectGrid"></div>
+      <div class="empty" id="projectEmpty" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
+        暂无项目，点击右上角「＋ 新建项目」接入第一个公司项目
+      </div>
+    </section>
+
+    <!-- 任务 -->
+    <section class="page" id="page-tasks">
+      <div class="task-bar">
+        <select id="taskProj" onchange="renderTasks()"><option value="">全部项目</option></select>
+        <select id="taskStatus" onchange="renderTasks()">
+          <option value="">全部状态</option>
+          <option value="running">执行中</option>
+          <option value="success">成功</option>
+          <option value="failed">失败</option>
+        </select>
+        <div class="spacer"></div>
+        <div class="seg" id="taskGroupSeg">
+          <button class="sbtn" id="tgFlat" onclick="setTaskGroup('flat')">平铺</button>
+          <button class="sbtn" id="tgProj" onclick="setTaskGroup('project')">按项目</button>
+        </div>
+        <span class="hint" id="taskCount"></span>
+      </div>
+      <div id="taskList"></div>
+      <div class="empty" id="taskEmpty" style="display:none">还没有执行任务。在项目卡片上点「跑全流程」或「跑核心回归」开始</div>
+      <div class="log-panel" id="logPanel"></div>
+    </section>
+
+    <!-- 自动化 -->
+    <section class="page" id="page-automation">
+      <div class="summary" id="autoSummary"></div>
+      <div id="autoList"></div>
+      <div class="empty" id="autoEmpty" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        暂无项目，先到「项目」页接入被测系统
+      </div>
+    </section>
+
+    <!-- 报告 -->
+    <section class="page" id="page-reports">
+      <div class="summary" id="repSummary"></div>
+      <div class="rep-card trend-card" id="trendCard" style="display:none">
+        <div class="trend-head">
+          <div><div class="rname">回归趋势 · 通过率</div><div class="renv" id="trendSub">—</div></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div class="seg">
+              <button class="seg-btn" id="tmSingle" onclick="setTrendMode('single')">单项目</button>
+              <button class="seg-btn" id="tmCompare" onclick="setTrendMode('compare')">跨项目对比</button>
+            </div>
+            <select class="sel" id="trendProj" onchange="renderTrend()"></select>
+            <div class="seg">
+              <button class="seg-btn" id="td7" onclick="setTrendDays(7)">近 7 天</button>
+              <button class="seg-btn" id="td30" onclick="setTrendDays(30)">近 30 天</button>
+              <button class="seg-btn" id="td0" onclick="setTrendDays(0)">全部</button>
+            </div>
+          </div>
+        </div>
+        <div id="trendChart"></div>
+      </div>
+      <div class="rep-card" id="insightCard" style="display:none">
+        <div class="rname">最不稳定的场景</div>
+        <div class="renv" style="margin:2px 0 8px">按历史失败次数排序 —— 高频失败项优先排查，或补断言/修数据</div>
+        <div id="insightList"></div>
+        <div id="clusterWrap" style="display:none;margin-top:16px;border-top:1px solid var(--border-2);padding-top:12px">
+          <div class="rname">高频失败原因</div>
+          <div class="renv" style="margin:2px 0 8px">按失败原因归并 —— 同一根因反复出现时，先修根因而非逐个场景重试</div>
+          <div id="clusterList"></div>
+        </div>
+      </div>
+      <div id="repList"></div>
+      <div class="empty" id="repEmpty" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        暂无项目，先到「项目」页接入被测系统并跑一次核心回归
+      </div>
+    </section>
+
+    <!-- 资料库 -->
+    <section class="page" id="page-knowledge">
+      <div class="kb">
+        <div class="kb-list" id="kbList"></div>
+        <div class="kb-pane" id="kbPane">
+          <div class="placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            <div>从左侧选择一篇文档开始阅读</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 技能 -->
+    <section class="page" id="page-skills">
+      <p class="hint" style="margin-bottom:16px">以下为 <code style="font-family:var(--mono)">agent-skills/</code> 目录下挂载到基座（fetch_agent_skill 机制）的技能。停用后基座运行时将跳过该技能。</p>
+      <div id="skillList"></div>
+    </section>
+
+    <!-- 模型维护 -->
+    <section class="page" id="page-models">
+      <div class="model-grid">
+        <div class="model-card">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>密钥状态</h3>
+          <div class="provider-sub">读取运行环境的环境变量，确认各 LLM 提供商的 API Key 是否已配置。</div>
+          <div class="key-row"><span class="label">Anthropic（Claude）</span><span class="key-state" id="keyAnthropic"><span class="kdot"></span><span class="txt">未配置</span></span></div>
+          <div class="key-row"><span class="label">Google（Gemini）</span><span class="key-state" id="keyGoogle"><span class="kdot"></span><span class="txt">未配置</span></span></div>
+          <div class="note">密钥通过根目录 <code>.env</code> 注入（<code>ANTHROPIC_API_KEY</code> / <code>GOOGLE_API_KEY</code>），不入库、不在此明文展示。</div>
+        </div>
+        <div class="model-card">
+          <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><path d="M12 2l2.4 4.8L20 8l-4 3.9.9 5.6L12 14.8 7.1 17.5 8 11.9 4 8l5.6-1.2z"/></svg>默认模型</h3>
+          <div class="provider-sub">设置智能体探索测试阶段默认使用的提供商与模型。</div>
+          <div class="field"><label>提供商</label>
+            <select id="mProvider"><option value="anthropic">Anthropic</option><option value="google">Google</option></select>
+          </div>
+          <div class="field"><label>模型名称</label>
+            <input id="mModel" placeholder="如 claude-sonnet-4-6 / gemini-2.5-pro">
+          </div>
+          <div class="field"><label>API Base URL（可选）</label>
+            <input id="mBase" placeholder="留空使用官方默认地址">
+          </div>
+          <button class="btn primary block" id="btnSaveModel" onclick="saveModel()">保存配置</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 项目详情弹窗 -->
+<div class="mask" id="detailMask">
+  <div class="modal" style="width:780px">
+    <h2 id="detailTitle">项目详情</h2>
+    <div class="tab-row">
+      <button class="btn tab sm active" data-tab="requirements" onclick="switchTab('requirements')">需求</button>
+      <button class="btn tab sm" data-tab="regression" onclick="switchTab('regression')">回归配置</button>
+      <button class="btn tab sm" data-tab="cases" onclick="switchTab('cases')">已生成用例</button>
+    </div>
+    <textarea id="d_requirements" class="mono" style="display:none"></textarea>
+    <textarea id="d_regression" class="mono" style="display:none"></textarea>
+    <textarea id="d_cases" class="mono" style="display:none" readonly></textarea>
+    <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
+    <div class="err-msg" id="detailErr"></div>
+    <div class="foot">
+      <button class="btn" onclick="closeDetail()">关闭</button>
+      <button class="btn" id="btnGenCases" style="display:none" onclick="generateCases()">立即生成用例</button>
+      <button class="btn primary" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 完整报告弹窗（iframe） -->
+<div class="mask" id="repMask">
+  <div class="modal rep-frame-wrap">
+    <div class="bar">
+      <div class="bar-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--primary)"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+        <div>
+          <h2 id="repModalTitle">完整报告</h2>
+          <div class="bar-sub" id="repModalSub">由需求生成的用例与核心回归结果</div>
+        </div>
+      </div>
+      <div class="bar-actions">
+        <button class="btn sm" onclick="openRepInTab()" title="在新标签页打开">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          新标签页
+        </button>
+        <button class="btn ghost sm" onclick="closeRepModal()">✕ 关闭</button>
+      </div>
+    </div>
+    <iframe id="repFrame" title="report"></iframe>
+  </div>
+</div>
+
+<!-- 新建项目弹窗 -->
+<div class="mask" id="modalMask">
+  <div class="modal">
+    <h2>新建项目 · 接入公司项目</h2>
+    <div class="form-grid">
+      <div class="field"><label>项目标识 *（英文，如 mall-admin）</label><input id="f_pid" placeholder="mall-admin"></div>
+      <div class="field"><label>项目名称</label><input id="f_name" placeholder="商城后台管理系统"></div>
+      <div class="field full"><label>测试环境地址</label><input id="f_base" placeholder="http://localhost:8080"></div>
+      <div class="field"><label>负责人</label><input id="f_owner" placeholder="未指定"></div>
+      <div class="field"><label>认证类型</label>
+        <select id="f_auth"><option value="none">none（无需登录）</option><option value="form">form（表单登录换取 token）</option><option value="bearer">bearer（已有 token）</option></select>
+      </div>
+      <div class="field"><label>登录接口路径</label><input id="f_login" value="/admin/login"></div>
+      <div class="field"><label>用户名环境变量名</label><input id="f_user" placeholder="留空自动按项目名生成"></div>
+      <div class="field"><label>口令环境变量名</label><input id="f_pass" placeholder="留空自动按项目名生成"></div>
+      <div class="field full hint">🔒 密钥分离：project.yaml 只存变量名，真实口令请写入根目录 .env（不会入库）</div>
+      <div class="field full"><label>项目需求（Markdown，每行一条编号需求；留空则生成模板）</label>
+        <textarea id="f_req" placeholder="1. 管理员可使用账号密码登录系统&#10;2. 管理员可创建新账号并校验唯一性&#10;3. 管理员可查询账号列表并支持分页"></textarea></div>
+    </div>
+    <div class="err-msg" id="formErr"></div>
+    <div class="foot">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" id="btnCreate" onclick="createProject()">创建项目</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗（删除等破坏性操作用） -->
+<div class="mask" id="confirmMask">
+  <div class="modal" style="max-width:480px">
+    <h2 id="confirmTitle">确认操作</h2>
+    <div id="confirmBody" style="font-size:13px;color:var(--muted);line-height:1.8"></div>
+    <div class="foot">
+      <button class="btn" onclick="closeConfirm()">取消</button>
+      <button class="btn primary" id="confirmOk">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 轻量提示条 -->
+<div class="toast" id="toast"></div>
+
+<script>
+const PAGE_META = {
+  projects:{title:'项目',sub:'公司项目与测试环境'},
+  tasks:{title:'任务',sub:'执行记录与实时日志'},
+  reports:{title:'报告',sub:'各项目最近一次回归结果'},
+  automation:{title:'自动化',sub:'核心业务回归场景'},
+  knowledge:{title:'资料库',sub:'项目文档与规范'},
+  skills:{title:'技能',sub:'挂载到基座的 Agent Skills'},
+  models:{title:'模型维护',sub:'LLM 提供商与默认模型'},
+};
+let pollTimer=null, currentLogTask=null, currentPage='projects', kbData=[];
+
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function svg(name){return ICONS[name]||'';}
+/* 轻量提示条：type = ok / bad / warn / 空(信息) */
+function showToast(msg,type=''){
+  const box=document.getElementById('toast'); if(!box) return;
+  const el=document.createElement('div');
+  el.className='t-item'+(type?' '+type:'');
+  el.textContent=msg;
+  box.appendChild(el);
+  setTimeout(()=>{el.style.transition='opacity .3s';el.style.opacity='0';
+    setTimeout(()=>el.remove(),320);},3600);
+}
+/* 任务类型中文名（任务页 / 提示条共用） */
+const KIND_LABEL={run:'全流程',regression:'核心回归',rerun:'单场景重跑',dashboard:'跨项目看板'};
+function kindLabel(k){return KIND_LABEL[k]||k||'任务';}
+const ICONS={
+  play:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+  refresh:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+  plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  doc:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+  eye:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
+  edit:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="10" y1="15" x2="10" y2="9"/><line x1="14" y1="15" x2="14" y2="9"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+  download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+};
+
+// ---------- 导航 ----------
+function topActionsFor(page){
+  if(page==='projects'){
+    return `<button class="btn" onclick="refreshDashboard()">${svg('refresh')} 跨项目看板</button>
+            <button class="btn" onclick="toggleShowDisabled()">${svg('eye')} ${SHOW_DISABLED?'隐藏已停用':'显示已停用'}</button>
+            <button class="btn primary" onclick="openModal()">${svg('plus')} 新建项目</button>`;
+  }
+  if(page==='tasks'){
+    return `<button class="btn primary" onclick="renderTasks()">${svg('refresh')} 刷新任务</button>`;
+  }
+  if(page==='reports'){
+    return `<button class="btn" onclick="exportReport('scenes')">${svg('download')} 场景明细 CSV</button>
+            <button class="btn" onclick="exportReport('trends')">${svg('download')} 趋势数据 CSV</button>
+            <button class="btn" onclick="exportReport('html')">${svg('download')} 完整报告 HTML</button>
+            <button class="btn primary" onclick="renderReports()">${svg('refresh')} 刷新报告</button>`;
+  }
+  return '';
+}
+document.querySelectorAll('.nav-item').forEach(el=>{
+  el.onclick=()=>{
+    const page=el.dataset.page;
+    document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('page-'+page).classList.add('active');
+    currentPage=page;
+    const m=PAGE_META[page];
+    document.getElementById('pageTitle').textContent=m.title;
+    document.getElementById('pageSub').textContent=m.sub;
+    document.getElementById('topActions').innerHTML=topActionsFor(page);
+    if(page==='projects') renderProjects();
+    else if(page==='tasks') renderTasks();
+    else if(page==='reports') renderReports();
+    else if(page==='automation') renderAutomation();
+    else if(page==='knowledge') renderKnowledge();
+    else if(page==='skills') loadSkills();
+    else if(page==='models') renderModels();
+  };
+});
+
+// ---------- 项目 ----------
+let SHOW_DISABLED=false;            // 项目页是否展示已停用项目
+function toggleShowDisabled(){
+  SHOW_DISABLED=!SHOW_DISABLED;
+  const el=document.getElementById('topActions');
+  if(el&&typeof currentPage!=='undefined') el.innerHTML=topActionsFor(currentPage);
+  renderProjects();
+}
+/* 通用确认弹窗：onOk 在点击「确认」时执行（删除等破坏性操作统一走它） */
+function confirmDialog(title,html,onOk){
+  document.getElementById('confirmTitle').textContent=title;
+  document.getElementById('confirmBody').innerHTML=html;
+  const ok=document.getElementById('confirmOk');
+  const fresh=ok.cloneNode(true);          // 克隆替换，避免残留上一次的 onclick
+  fresh.onclick=()=>{closeConfirm();onOk();};
+  ok.parentNode.replaceChild(fresh,ok);
+  document.getElementById('confirmMask').classList.add('show');
+}
+function closeConfirm(){document.getElementById('confirmMask').classList.remove('show');}
+async function setProjectDisabled(pid,disabled){
+  const r=await fetch('/api/projects/'+encodeURIComponent(pid)+'/disable',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({disabled:disabled})});
+  const d=await r.json();
+  if(!d.ok){showToast('操作失败：'+(d.error||'未知错误'),'bad');return;}
+  showToast(`已${disabled?'停用':'启用'}项目：${pid}`,disabled?'warn':'ok');
+  renderProjects();
+  if(typeof renderReports==='function'&&!disabled) renderReports();
+}
+function askDeleteProject(pid,name){
+  confirmDialog('删除项目 · '+pid,
+    `将<b>永久删除</b>以下内容，且无法撤销：<br>
+     · 项目目录 <code>projects/${esc(pid)}</code>（含需求、用例、回归配置与报告）<br>
+     · 该项目的任务历史与回归趋势快照<br><br>
+     若只是暂时不想让它参与回归与看板，建议改用「停用」（数据保留，可随时恢复）。`,
+    ()=>deleteProject(pid));
+}
+async function deleteProject(pid){
+  const r=await fetch('/api/projects/'+encodeURIComponent(pid)+'?confirm=1',{method:'DELETE'});
+  const d=await r.json();
+  if(!d.ok){showToast('删除失败：'+(d.error||'未知错误'),'bad');return;}
+  showToast('已删除项目：'+pid,'ok');
+  renderProjects();
+  if(typeof renderReports==='function') renderReports();
+}
+async function renderProjects(){
+  const r=await fetch('/api/projects?include_disabled='+(SHOW_DISABLED?'1':'0')); const d=await r.json();
+  const g=document.getElementById('projectGrid');
+  document.getElementById('projectEmpty').style.display=d.projects.length?'none':'block';
+  g.innerHTML='';
+  const term=searchTerm();
+  const list=d.projects.filter(p=>(p.name||p.pid).toLowerCase().includes(term)||(p.pid||'').toLowerCase().includes(term));
+  // 概览
+  const passed=d.projects.filter(p=>p.reg&&p.reg.all_pass&&p.reg.total>0).length;
+  const pending=d.projects.length-passed;
+  const sum=document.getElementById('projSummary');
+  sum.innerHTML=`
+    <div class="stat"><div class="k">项目总数</div><div class="v s-info">${d.projects.length}</div></div>
+    <div class="stat"><div class="k">回归通过</div><div class="v s-ok">${passed}</div></div>
+    <div class="stat"><div class="k">待执行 / 未通过</div><div class="v s-bad">${pending}</div></div>
+    <div class="stat"><div class="k">核心回归项</div><div class="v s-purple">${d.projects.reduce((a,p)=>a+((p.reg&&p.reg.total)||0),0)}</div></div>`;
+  list.forEach(p=>{
+    const reg=p.reg;
+    let badge;
+    if(!reg){badge='<span class="badge none">未执行回归</span>';}
+    else if(reg.all_pass){badge=`<span class="badge ok">● 回归通过 ${reg.passed}/${reg.total}</span>`;}
+    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">● 回归未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
+    const div=document.createElement('div');
+    div.className='card'+(p.disabled?' disabled':'');
+    const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
+    div.innerHTML=`
+      <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}</div></div>
+      <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
+      <div class="ops">
+        <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
+        <button class="btn sm" onclick="exec('${jsq(p.pid)}','regression')">${svg('refresh')} 跑核心回归</button>
+        <button class="btn sm" onclick="openDetail('${jsq(p.pid)}')">${svg('edit')} 需求/配置</button>
+        <button class="btn sm" onclick="openReport('/reports/${jsq(p.pid)}/report.html')" ${p.has_report?'':'disabled'}>${svg('eye')} 查看报告</button>
+        <button class="btn sm" title="${p.disabled?'恢复该项目（重新参与回归与看板）':'停用后不参与回归与看板，数据保留'}"
+          onclick="setProjectDisabled('${jsq(p.pid)}',${p.disabled?'false':'true'})">${p.disabled?svg('play')+' 启用':svg('pause')+' 停用'}</button>
+        <button class="btn sm danger" title="永久删除项目目录与历史数据" onclick="askDeleteProject('${jsq(p.pid)}')">${svg('trash')} 删除</button>
+      </div>`;
+    g.appendChild(div);
+  });
+}
+
+// ---------- 执行 ----------
+async function exec(pid,kind){
+  const url=kind==='run'?`/api/projects/${pid}/run`:`/api/projects/${pid}/regression`;
+  const r=await fetch(url,{method:'POST'}); const d=await r.json();
+  if(!d.ok){alert('执行失败：'+d.error);return;}
+  currentLogTask=d.task_id;
+  document.querySelector('.nav-item[data-page="tasks"]').click();
+  pollTask(d.task_id);
+}
+function pollTask(tid){
+  const panel=document.getElementById('logPanel');
+  panel.classList.add('show');
+  if(pollTimer)clearInterval(pollTimer);
+  pollTimer=setInterval(async()=>{
+    const r=await fetch('/api/tasks/'+tid); const d=await r.json();
+    if(!d.ok){clearInterval(pollTimer);return;}
+    const t=d.task;
+    panel.textContent=`[${kindLabel(t.kind)}] ${t.pid}  ·  ${t.status}${t.exit_code!=null?' (exit='+t.exit_code+')':''}\n\n`+(t.log||'…启动中…');
+    panel.scrollTop=panel.scrollHeight;
+    if(t.status!=='running'){clearInterval(pollTimer);renderTasks();renderProjects();renderAutomation();}
+  },1200);
+}
+async function renderTasks(){
+  const ga=document.getElementById('tgFlat'), gb=document.getElementById('tgProj');
+  if(ga)ga.classList.toggle('active',TASK_GROUP==='flat');
+  if(gb)gb.classList.toggle('active',TASK_GROUP==='project');
+  const r=await fetch('/api/tasks'); const d=await r.json();
+  const tasks=d.tasks||[];
+  // 项目筛选项（保留当前选择）
+  const projSel=document.getElementById('taskProj'); const cur=projSel.value;
+  const projs=[...new Set(tasks.map(t=>t.pid).filter(Boolean))].sort();
+  projSel.innerHTML='<option value="">全部项目</option>'+projs.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
+  if([...projSel.options].some(o=>o.value===cur)) projSel.value=cur;
+  const fp=projSel.value, fs=document.getElementById('taskStatus').value, term=searchTerm();
+  const filtered=tasks.filter(t=>
+    (!fp||t.pid===fp) && (!fs||t.status===fs) &&
+    ((t.pid||'').toLowerCase().includes(term)||(t.kind||'').toLowerCase().includes(term)||(t.command||'').toLowerCase().includes(term))
+  );
+  document.getElementById('taskCount').textContent=`共 ${filtered.length} 条`;
+  document.getElementById('taskEmpty').style.display=filtered.length?'none':'block';
+  const list=document.getElementById('taskList'); list.innerHTML='';
+  if(TASK_GROUP==='project'){
+    const groups={};
+    filtered.forEach(t=>{const k=t.pid||'(无项目)';(groups[k]=groups[k]||[]).push(t);});
+    Object.keys(groups).sort().forEach(pid=>{
+      const items=groups[pid];
+      const ok=items.filter(t=>t.status==='success').length;
+      const bad=items.filter(t=>t.status==='failed').length;
+      const run=items.filter(t=>t.status==='running').length;
+      const last=items[0]||{};                 // 列表本身按时间倒序
+      const g=document.createElement('div');
+      g.className='task-group'+(TG_COLLAPSED.has(pid)?' collapsed':'');
+      g.innerHTML=`
+        <div class="tg-head" onclick="toggleTaskGroup('${jsq(pid)}')">
+          <span class="tg-caret"></span>
+          <span class="tg-name">${esc(pid)}</span>
+          <span class="tg-stats">
+            ${ok?`<span class="tg-stat ok">成功 ${ok}</span>`:''}
+            ${bad?`<span class="tg-stat bad">失败 ${bad}</span>`:''}
+            ${run?`<span class="tg-stat skip">执行中 ${run}</span>`:''}
+            <span class="tg-stat gray">共 ${items.length}</span>
+          </span>
+          <div style="flex:1"></div>
+          <span class="tg-last">最近 ${esc(last.started||'')} · ${esc(fmtDuration(last))}</span>
+        </div>
+        <div class="tg-body"></div>`;
+      const body=g.querySelector('.tg-body');
+      items.forEach(t=>body.appendChild(taskItem(t)));
+      list.appendChild(g);
+    });
+  }else{
+    filtered.forEach(t=>list.appendChild(taskItem(t)));
+  }
+}
+function taskItem(t){
+  const cls=t.status==='running'?'skip':(t.status==='success'?'ok':'bad');
+  const label={running:'执行中…',success:'成功',failed:'失败'}[t.status]||t.status;
+  const kindCls={dashboard:'info',regression:'purple',rerun:'purple',run:'info'}[t.kind]||'gray';
+  const kindBadge=`<span class="badge ${kindCls}">${esc(kindLabel(t.kind))}</span>`;
+  const div=document.createElement('div'); div.className='task-item';
+  div.innerHTML=`
+    <div class="t-main" style="cursor:pointer" onclick="toggleTaskLog('${t.id}')">
+      <div class="t-kind">${kindBadge} <span style="color:var(--text)">${esc(t.pid)}</span></div>
+      <div class="t-meta">${t.started}${t.finished?' → '+t.finished:''} · 耗时 ${fmtDuration(t)} · 退出码 ${t.exit_code!=null?t.exit_code:'-'} ${t.command?('· '+esc(t.command)):''}</div>
+    </div>
+    <div class="t-side"><span class="badge ${cls}">${label}</span>
+      <button class="btn sm" onclick="event.stopPropagation();${t.status==='running'?'viewLogLive':'toggleTaskLog'}('${t.id}')">${t.status==='running'?'实时':'展开日志'}</button></div>
+    <div class="log-panel" id="tasklog-${t.id}"></div>`;
+  return div;
+}
+function setTaskGroup(m){
+  TASK_GROUP=m;
+  const a=document.getElementById('tgFlat'), b=document.getElementById('tgProj');
+  if(a)a.classList.toggle('active',m==='flat');
+  if(b)b.classList.toggle('active',m==='project');
+  try{localStorage.setItem('taskGroup',m);}catch(e){}
+  renderTasks();
+}
+function toggleTaskGroup(pid){
+  if(TG_COLLAPSED.has(pid)) TG_COLLAPSED.delete(pid); else TG_COLLAPSED.add(pid);
+  renderTasks();
+}
+async function toggleTaskLog(tid){
+  const panel=document.getElementById('tasklog-'+tid);
+  if(panel.classList.contains('show')){panel.classList.remove('show');panel.textContent='';return;}
+  document.querySelectorAll('#taskList .log-panel.show').forEach(p=>{p.classList.remove('show');p.textContent='';});
+  panel.classList.add('show'); panel.textContent='加载中…';
+  const d=await (await fetch('/api/tasks/'+tid)).json();
+  if(!d.ok){panel.textContent='读取失败：'+(d.error||'');return;}
+  const t=d.task;
+  panel.textContent=`[${t.kind}] ${t.pid}  ·  ${t.status}${t.exit_code!=null?' (exit='+t.exit_code+')':''}\n\n`+(t.log||'（无日志）');
+  panel.scrollTop=panel.scrollHeight;
+}
+function fmtDuration(t){
+  if(t.started_ts && t.finished_ts){
+    const s=Math.max(0,Math.round(t.finished_ts-t.started_ts));
+    return s<60? s+'s' : Math.floor(s/60)+'m '+(s%60)+'s';
+  }
+  if(t.started && t.finished){
+    const a=t.started.split(':').map(Number), b=t.finished.split(':').map(Number);
+    if(a.length===3&&b.length===3){const s=(b[0]*3600+b[1]*60+b[2])-(a[0]*3600+a[1]*60+a[2]); if(s>=0) return s<60? s+'s' : Math.floor(s/60)+'m '+(s%60)+'s';}
+  }
+  return '—';
+}
+function viewLogLive(tid){currentLogTask=tid;document.querySelector('.nav-item[data-page="tasks"]').click();pollTask(tid);}
+
+// ---------- 自动化 ----------
+async function renderAutomation(){
+  const r=await fetch('/api/automation'); const d=await r.json();
+  const list=document.getElementById('autoList');
+  document.getElementById('autoEmpty').style.display=d.automations.length?'none':'block';
+  list.innerHTML='';
+  let totalScn=0;
+  const term=searchTerm();
+  d.automations.filter(a=>(a.name||a.pid).toLowerCase().includes(term)||(a.pid||'').toLowerCase().includes(term)).forEach(a=>{
+    totalScn+=a.scenarios.length;
+    const reg=a.reg;
+    // 场景名 -> 上一次结果
+    const resMap={};
+    if(reg&&reg.results) reg.results.forEach(x=>resMap[x.name]=x.result);
+    let badge;
+    if(!reg){badge='<span class="badge none">未执行</span>';}
+    else if(reg.all_pass){badge=`<span class="badge ok">● ${reg.passed}/${reg.total} 通过</span>`;}
+    else{badge=`<span class="badge bad">● ${reg.passed}/${reg.total} 通过</span>`;}
+    const scns=a.scenarios.map(s=>{
+      const res=resMap[s.name];
+      let rbadge='<span class="badge gray">未执行</span>';
+      if(res==='PASS')rbadge='<span class="badge ok">通过</span>';
+      else if(res==='FAIL')rbadge='<span class="badge bad">失败</span>';
+      else if(res==='SKIP')rbadge='<span class="badge skip">跳过</span>';
+      const typeBadge=s.type==='api_smoke'?'<span class="badge info">冒烟</span>':`<span class="badge purple">${esc(s.type)}</span>`;
+      const route=s.method?`<span class="chip ${s.method.toLowerCase()}">${esc(s.method)}</span> <span class="sroute">${esc(s.path||'')}</span>`:(s.marker?`<span class="chip">-m ${esc(s.marker)}</span>`:'<span class="sroute">—</span>');
+      return `<div class="scn"><div style="flex:1;min-width:0"><div class="sname">${esc(s.name||'(未命名)')}</div><div>${route}</div></div>${typeBadge}${rbadge}<button class="btn sm" title="只重跑该场景，结果合并回回归报告" onclick="rerunScene('${jsq(a.pid)}','${jsq(s.name)}',this)">${svg('refresh')} 重跑</button></div>`;
+    }).join('');
+    const div=document.createElement('div');
+    div.className='auto-proj';
+    div.innerHTML=`
+      <div class="ph">
+        <div><div class="pname">${esc(a.name||a.pid)}</div><div class="penv">${esc(a.base_url)} · ${a.scenarios.length} 个核心场景</div></div>
+        <div style="display:flex;gap:10px;align-items:center">${badge}
+          <button class="btn sm primary" onclick="exec('${a.pid}','regression')">${svg('refresh')} 运行核心回归</button></div>
+      </div>
+      ${scns||'<div class="hint" style="padding:8px 2px">尚无 regression.yaml 场景</div>'}`;
+    list.appendChild(div);
+  });
+  const passed=d.automations.filter(a=>a.reg&&a.reg.all_pass&&a.reg.total>0).length;
+  document.getElementById('autoSummary').innerHTML=`
+    <div class="stat"><div class="k">接入项目</div><div class="v s-info">${d.automations.length}</div></div>
+    <div class="stat"><div class="k">核心场景</div><div class="v s-purple">${totalScn}</div></div>
+    <div class="stat"><div class="k">最近通过</div><div class="v s-ok">${passed}</div></div>`;
+}
+
+// ---------- 报告中心 ----------
+let TREND={};                       // pid -> {snapshots, scenes}，报告页渲染时预载
+let TREND_MODE='single';            // single=单项目 / compare=跨项目对比
+let TREND_DAYS=0;                   // 时间范围：0=全部，7/30=近 N 天（在后端 SQL 层过滤）
+let TASK_GROUP='flat';              // flat=平铺 / project=按项目分组
+let TG_COLLAPSED=new Set();         // 分组视图下被折叠的项目
+let REP_PROJS=[];                   // 报告页最近一次渲染的项目数据（导出用）
+try{const _g=localStorage.getItem('taskGroup'); if(_g==='project'||_g==='flat') TASK_GROUP=_g;}catch(e){}
+const DAYS_LABEL={7:'近 7 天',30:'近 30 天',0:'全部'};
+function fmtTs(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,'0');
+  return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());}
+/* 场景历史小方块：一眼看出该场景最近是稳定通过还是反复失败 */
+function sceneDots(hist){
+  if(!hist||!hist.length) return '';
+  const last=hist.slice(-10);
+  const cls=r=>r==='PASS'?'pass':(r==='FAIL'?'fail':(r==='SKIP'?'skip':'none'));
+  return `<span class="dots" title="最近 ${last.length} 次：${last.map(h=>h.result||'?').join(' → ')}">`
+    +last.map(h=>`<span class="dot ${cls(h.result)}" title="${fmtTs(h.ts)} ${esc(h.result||'?')}${h.detail?' · '+esc(h.detail):''}"></span>`).join('')
+    +`</span>`;
+}
+/* 通过率折线图（手写 SVG，不依赖外部图表库，离线可用） */
+function trendChartSVG(snaps){
+  if(!snaps||!snaps.length) return `<div class="hint" style="padding:10px 2px">${
+    TREND_DAYS?`${DAYS_LABEL[TREND_DAYS]||'该范围'}内没有回归记录，换个时间范围试试`:'暂无历史快照，跑一次「核心回归」后开始记录趋势'}</div>`;
+  const W=640,H=180,PL=36,PR=14,PT=14,PB=30;
+  const n=snaps.length;
+  const rate=s=>s.total?s.passed/s.total*100:0;
+  const X=i=>n===1?(PL+(W-PL-PR)/2):PL+i*(W-PL-PR)/(n-1);
+  const Y=v=>PT+(100-v)*(H-PT-PB)/100;
+  let g='';
+  [0,50,100].forEach(v=>{g+=`<line class="grid" x1="${PL}" y1="${Y(v)}" x2="${W-PR}" y2="${Y(v)}"/>`
+    +`<text class="ax" x="${PL-6}" y="${Y(v)+3.5}">${v}%</text>`;});
+  const line=snaps.map((s,i)=>`${X(i)},${Y(rate(s))}`).join(' ');
+  let dots='';
+  snaps.forEach((s,i)=>{
+    const c=s.all_pass?'var(--ok)':'var(--bad)';
+    const tip=`${fmtTs(s.ts)} · 通过 ${s.passed}/${s.total}（失败 ${s.failed}，跳过 ${s.skipped}）`
+      +`\n触发：${kindLabel(s.trigger)}${s.scene?' · 重跑「'+esc(s.scene)+'」':''}`;
+    dots+=`<circle cx="${X(i)}" cy="${Y(rate(s))}" r="3.6" fill="${c}"><title>${tip}</title></circle>`;
+  });
+  // x 轴只标首、中、末，避免密集重叠
+  const xi=[0, Math.floor((n-1)/2), n-1].filter((v,i,a)=>a.indexOf(v)===i);
+  const xl=xi.map(i=>`<text class="xl" x="${X(i)}" y="${H-10}" text-anchor="${i===0?'start':(i===n-1?'end':'middle')}">${fmtTs(snaps[i].ts)}</text>`).join('');
+  return `<svg class="trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">${g}`
+    +`<polyline class="line" points="${line}"/>${dots}${xl}</svg>`
+    +`<div class="renv" style="margin-top:2px">共 ${n} 次记录 · 绿点=门禁通过，红点=未通过（鼠标悬停看明细）</div>`;
+}
+/* 跨项目对比：同一时间轴上画多条通过率折线 */
+const TREND_PAL=['#4f46e5','#10b981','#f59e0b','#ef4444','#06b6d4','#8b5cf6'];
+function compareChartSVG(series){
+  if(!series||!series.length) return '<div class="hint" style="padding:10px 2px">暂无历史快照，跑一次「核心回归」后开始记录趋势</div>';
+  const W=640,H=190,PL=36,PR=14,PT=14,PB=30;
+  const all=[].concat(...series.map(s=>s.pts));
+  const tmin=Math.min(...all.map(p=>p.ts)), tmax=Math.max(...all.map(p=>p.ts));
+  const X=t=>tmax===tmin?(PL+(W-PL-PR)/2):PL+(t-tmin)/(tmax-tmin)*(W-PL-PR);
+  const Y=v=>PT+(100-v)*(H-PT-PB)/100;
+  let g='';
+  [0,50,100].forEach(v=>{g+=`<line class="grid" x1="${PL}" y1="${Y(v)}" x2="${W-PR}" y2="${Y(v)}"/>`
+    +`<text class="ax" x="${PL-6}" y="${Y(v)+3.5}">${v}%</text>`;});
+  let body='';
+  series.forEach(s=>{
+    const pts=s.pts.map(p=>`${X(p.ts)},${Y(p.rate)}`).join(' ');
+    body+=`<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    s.pts.forEach(p=>{
+      body+=`<circle cx="${X(p.ts)}" cy="${Y(p.rate)}" r="3.2" fill="${s.color}"><title>`
+        +`${esc(s.name)} · ${fmtTs(p.ts)} · 通过 ${p.passed}/${p.total}（失败 ${p.failed}）`
+        +`\n触发：${kindLabel(p.trigger)}${p.scene?' · 重跑「'+esc(p.scene)+'」':''}</title></circle>`;
+    });
+  });
+  const xl=`<text class="xl" x="${PL}" y="${H-10}">${fmtTs(tmin)}</text>`
+    +`<text class="xl" x="${W-PR}" y="${H-10}" text-anchor="end">${fmtTs(tmax)}</text>`;
+  const legend=`<div class="legend">`+series.map(s=>
+    `<span class="lg"><span class="sw" style="background:${s.color}"></span>${esc(s.name)}（${s.pts.length} 次）</span>`).join('')+`</div>`;
+  return `<svg class="trend-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img">${g}${body}${xl}</svg>`
+    +legend+`<div class="renv" style="margin-top:2px">同一时间轴对比各项目通过率（鼠标悬停看点明细）</div>`;
+}
+function renderCompare(){
+  let i=0; const series=[];
+  Object.keys(TREND).forEach(pid=>{
+    const t=TREND[pid]; const s=(t&&t.snapshots)||[];
+    if(!s.length) return;
+    series.push({pid:pid,name:pid,color:TREND_PAL[i++%TREND_PAL.length],
+      pts:s.map(x=>({ts:x.ts,rate:x.total?x.passed/x.total*100:0,passed:x.passed,
+        total:x.total,failed:x.failed,trigger:x.trigger,scene:x.scene}))});
+  });
+  document.getElementById('trendChart').innerHTML=compareChartSVG(series);
+  const n=series.reduce((a,s)=>a+s.pts.length,0);
+  document.getElementById('trendSub').textContent=series.length
+    ? `${DAYS_LABEL[TREND_DAYS]||'全部'} · ${series.length} 个项目 · 共 ${n} 次记录` : '—';
+}
+function syncTrendBtns(){
+  const a=document.getElementById('tmSingle'), b=document.getElementById('tmCompare');
+  if(a)a.classList.toggle('active',TREND_MODE==='single');
+  if(b)b.classList.toggle('active',TREND_MODE==='compare');
+  [7,30,0].forEach(v=>{const el=document.getElementById('td'+v);
+    if(el)el.classList.toggle('active',String(TREND_DAYS)===String(v));});
+  const sel=document.getElementById('trendProj');
+  if(sel)sel.style.display=TREND_MODE==='single'?'':'none';
+}
+function setTrendMode(m){TREND_MODE=m;syncTrendBtns();renderTrend();}
+/* 改时间范围会改变底层数据（趋势/场景历史/洞察都基于它），所以整体重拉一次 */
+function setTrendDays(d){
+  if(TREND_DAYS===d) return;
+  TREND_DAYS=d; syncTrendBtns(); renderReports();
+}
+async function renderTrend(){
+  if(TREND_MODE==='compare'){renderCompare();return;}
+  const sel=document.getElementById('trendProj');
+  const pid=sel&&sel.value; if(!pid) return;
+  const t=TREND[pid];
+  document.getElementById('trendChart').innerHTML=trendChartSVG(t&&t.snapshots);
+  const s=(t&&t.snapshots)||[];
+  const okN=s.filter(x=>x.all_pass).length;
+  document.getElementById('trendSub').textContent=s.length
+    ? `${DAYS_LABEL[TREND_DAYS]||'全部'} · 最近 ${s.length} 次：门禁通过 ${okN} 次（${Math.round(okN/s.length*100)}%）`
+    : '—';
+}
+/* 不稳定场景洞察：聚合各项目场景历史，按失败次数排序 */
+/* 纯计算：不稳定场景列表（页面渲染与导出共用，避免两处口径不一致） */
+function unstableScenes(projs){
+  const rows=[];
+  (projs||[]).forEach(p=>{
+    const t=TREND[p.pid]; if(!t||!t.scenes) return;
+    Object.keys(t.scenes).forEach(name=>{
+      const hist=t.scenes[name]||[]; const tot=hist.length; if(!tot) return;
+      const fail=hist.filter(x=>x.result==='FAIL').length;
+      const skip=hist.filter(x=>x.result==='SKIP').length;
+      if(!fail&&!skip) return;
+      const last=hist[tot-1]||{};
+      rows.push({pid:p.pid,pname:p.name||p.pid,name:name,fail:fail,skip:skip,tot:tot,
+        rate:Math.round(fail/tot*100),detail:last.detail,last:last.result});
+    });
+  });
+  rows.sort((a,b)=>b.fail-a.fail||b.rate-a.rate||b.tot-a.tot);
+  return rows;
+}
+function renderInsights(projs){
+  const rows=unstableScenes(projs);
+  const top=rows.slice(0,6), box=document.getElementById('insightList');
+  if(!top.length){box.innerHTML='';return false;}
+  box.innerHTML=top.map(r=>`
+    <div class="ins-row">
+      <div class="ins-left">
+        <div class="ins-name">${esc(r.name)} <span class="renv">· ${esc(r.pname)}</span></div>
+        <div class="ins-meta">历史 ${r.tot} 次：失败 ${r.fail} · 跳过 ${r.skip} · 失败率 ${r.rate}%${r.detail?' · 最近：'+esc(r.detail):''}</div>
+        <div class="ins-bar"><i style="width:${Math.max(r.rate,3)}%"></i></div>
+      </div>
+      <button class="btn sm" title="重跑该场景验证是否已修复" onclick="rerunScene('${jsq(r.pid)}','${jsq(r.name)}',this)">${svg('refresh')} 重跑</button>
+    </div>`).join('');
+  return true;
+}
+/* 失败原因归并：把各项目/场景的失败 detail 归成同一根因。
+   归一化只把「4 位以上数字」（时间戳、ID、随机后缀）抹掉，
+   保留 404/500 这类状态码——它们正是区分根因的关键信息，不能一起抹平。 */
+function normReason(s){
+  return String(s||'').replace(/\s+/g,' ').replace(/\d{4,}/g,'…').trim().slice(0,200);
+}
+function clusterFailures(projs){
+  const groups={};
+  (projs||[]).forEach(p=>{
+    const t=TREND[p.pid]; if(!t||!t.scenes) return;
+    Object.keys(t.scenes).forEach(name=>{
+      (t.scenes[name]||[]).forEach(h=>{
+        if(h.result!=='FAIL') return;
+        const raw=String(h.detail||'').trim();
+        if(!raw) return;                       // 无失败说明的（如 pytest 汇总）不参与聚类
+        const key=normReason(raw);
+        const g=groups[key]||(groups[key]={key:key,count:0,example:raw,scenes:{},last:0,first:0});
+        g.count++;
+        g.scenes[p.pid+'::'+name]=(g.scenes[p.pid+'::'+name]||0)+1;
+        const ts=h.ts||0;
+        if(ts>g.last){g.last=ts;g.example=raw;}
+        if(!g.first||ts<g.first){g.first=ts;}
+      });
+    });
+  });
+  return Object.keys(groups).map(k=>groups[k]).sort((a,b)=>b.count-a.count).slice(0,5);
+}
+function renderClusters(projs){
+  const wrap=document.getElementById('clusterWrap');
+  const gs=clusterFailures(projs);
+  if(!gs.length){if(wrap)wrap.style.display='none';return false;}
+  wrap.style.display='';
+  const now=Math.floor(Date.now()/1000);
+  document.getElementById('clusterList').innerHTML=gs.map(g=>{
+    const sc=Object.keys(g.scenes);
+    const names=sc.slice(0,3).map(k=>esc(k.split('::')[1]));
+    const txt=g.example.length>110?g.example.slice(0,110)+'…':g.example;
+    // 时间维度：首次出现多久了 / 持续活跃多少天 / 是新增根因还是老毛病
+    const ageD=g.first?Math.floor((now-g.first)/86400):0;      // 首次出现距今（天）
+    const spanD=(g.first&&g.last)?Math.floor((g.last-g.first)/86400):0;  // 持续跨度（天）
+    const fresh=g.first&&ageD<=1;                              // 24h 内首次出现 = 新增
+    const chronic=spanD>=3;                                    // 跨 3 天以上反复 = 老毛病
+    const tag=fresh?'<span class="badge skip" style="margin-right:6px">新增</span>'
+             :(chronic?'<span class="badge gray" style="margin-right:6px">老毛病</span>':'');
+    const timeTxt=[g.first?'首次 '+fmtTs(g.first):'', ageD>0?('距今 '+ageD+' 天'):'', spanD>0?('持续 '+spanD+' 天'):'']
+      .filter(Boolean).join(' · ');
+    return `<div class="ins-row">
+      <div class="ins-left">
+        <div class="ins-name"><span class="badge bad" style="margin-right:6px">${g.count} 次</span>${tag}${esc(txt)}</div>
+        <div class="ins-meta">涉及 ${sc.length} 个场景：${names.join('、')}${sc.length>3?' 等':''}${g.last?' · 最近 '+fmtTs(g.last):''}</div>
+        ${timeTxt?`<div class="ins-meta" style="opacity:.75">${esc(timeTxt)}</div>`:''}
+      </div>
+      <button class="btn sm" title="重跑该原因最近出现的场景，验证是否已修复"
+        onclick="rerunScene('${jsq(sc[0].split('::')[0])}','${jsq(sc[0].split('::')[1])}',this)">${svg('refresh')} 重跑</button>
+    </div>`;
+  }).join('');
+  return true;
+}
+/* ---------- 报告导出：CSV（带 BOM 防 Excel 中文乱码）/ 自包含 HTML ---------- */
+function csvCell(v){
+  const s=String(v==null?'':v);
+  return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+}
+function downloadFile(name, content, mime){
+  const blob=new Blob([content],{type:mime||'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+function fmtDateTime(ts){
+  if(!ts) return '';
+  const d=new Date(ts*1000), p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function exportSeries(projs){
+  return (projs||[]).map((p,i)=>{
+    const s=((TREND[p.pid]||{}).snapshots)||[];
+    return {name:p.name||p.pid,color:(TREND_PAL||[])[i%(TREND_PAL||[]).length]||'#4f46e5',
+      pts:s.map(x=>({ts:x.ts,rate:x.total?Math.round(x.passed/x.total*100):0,
+        passed:x.passed,total:x.total,failed:x.failed,trigger:x.trigger,scene:x.scene}))};
+  }).filter(s=>s.pts.length);
+}
+function exportReport(kind){
+  const projs=REP_PROJS||[];
+  if(!projs.length){showToast('报告数据尚未加载，请稍候重试');return;}
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  const stamp=`${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+  const range=DAYS_LABEL[TREND_DAYS]||'全部';
+
+  if(kind==='scenes'){
+    const rows=[['项目','项目名','场景','类型','最近结果','历史次数','通过','失败','跳过','失败率%','最近时间','最近失败原因']];
+    projs.forEach(p=>{
+      const scenes=(TREND[p.pid]||{}).scenes||{};
+      const cur={}; ((p.reg||{}).results||[]).forEach(r=>cur[r.name]=r);
+      [...new Set([...Object.keys(scenes),...Object.keys(cur)])].forEach(n=>{
+        const h=scenes[n]||[], c=cur[n]||{}, cnt={PASS:0,FAIL:0,SKIP:0};
+        h.forEach(x=>{cnt[x.result]=(cnt[x.result]||0)+1;});
+        const last=h[h.length-1]||{};
+        rows.push([p.pid,p.name||p.pid,n,c.type||'',c.result||last.result||'',h.length,
+          cnt.PASS,cnt.FAIL,cnt.SKIP,h.length?Math.round(cnt.FAIL/h.length*100):0,
+          fmtDateTime(last.ts),((last.result==='FAIL'||last.result==='SKIP')?(last.detail||c.detail||''):'')]);
+      });
+    });
+    downloadFile(`场景明细_${stamp}.csv`,'\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');
+    showToast(`已导出场景明细 CSV（${rows.length-1} 行）`);
+
+  }else if(kind==='trends'){
+    const rows=[['项目','项目名','时间','触发方式','重跑场景','通过','总数','失败','跳过','门禁通过']];
+    projs.forEach(p=>((TREND[p.pid]||{}).snapshots||[]).forEach(s=>
+      rows.push([p.pid,p.name||p.pid,fmtDateTime(s.ts),s.trigger||'',s.scene||'',
+        s.passed,s.total,s.failed,s.skipped,s.all_pass?'是':'否'])));
+    downloadFile(`趋势数据_${stamp}.csv`,'\ufeff'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');
+    showToast(`已导出趋势数据 CSV（${rows.length-1} 行）`);
+
+  }else if(kind==='html'){
+    const chart=exportSeries(projs);
+    const chartSVG=chart.length?compareChartSVG(chart):'<p class="muted">暂无趋势数据</p>';
+    const ins=unstableScenes(projs).slice(0,10);
+    const gs=clusterFailures(projs);
+    const rows=projs.map(p=>{
+      const r=p.reg||{}, badge=r.all_pass?'<span class="ok">通过</span>'
+        :(r.total?'<span class="bad">未通过</span>':'<span class="skip">无数据</span>');
+      return `<tr><td>${esc(p.name||p.pid)}</td><td>${esc(p.pid)}</td><td>${badge}</td>
+        <td>${r.passed||0}/${r.total||0}</td><td>${esc(p.base_url||'')}</td></tr>`;
+    }).join('');
+    const insHTML=ins.length?`<table><thead><tr><th>场景</th><th>项目</th><th>失败</th><th>跳过</th><th>总数</th><th>失败率</th><th>最近原因</th></tr></thead><tbody>${
+      ins.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.pname)}</td><td>${r.fail}</td><td>${r.skip}</td><td>${r.tot}</td><td>${r.rate}%</td><td>${esc(r.detail||'')}</td></tr>`).join('')
+    }</tbody></table>`:'<p class="muted">所选时间范围内没有失败或跳过的场景。</p>';
+    const gsHTML=gs.length?`<table><thead><tr><th>次数</th><th>原因</th><th>波及场景</th><th>首次出现</th><th>最近出现</th></tr></thead><tbody>${
+      gs.map(g=>{const sc=Object.keys(g.scenes);
+        return `<tr><td>${g.count}</td><td>${esc(g.example)}</td><td>${sc.length}（${sc.slice(0,3).map(k=>esc(k.split('::')[1])).join('、')}${sc.length>3?' 等':''}）</td><td>${fmtDateTime(g.first)}</td><td>${fmtDateTime(g.last)}</td></tr>`;}).join('')
+    }</tbody></table>`:'<p class="muted">所选时间范围内没有可聚类的失败原因。</p>';
+    const html=`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>测试报告 · ${esc(range)} · ${stamp}</title>
+<style>
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:32px;color:#1f2937;background:#fff;}
+h1{font-size:20px;margin:0 0 4px;} h2{font-size:15px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid #e5e7eb;}
+.meta{color:#6b7280;font-size:12px;margin-bottom:18px;}
+table{border-collapse:collapse;width:100%;font-size:12.5px;margin-bottom:6px;}
+th,td{border:1px solid #e5e7eb;padding:6px 9px;text-align:left;}
+th{background:#f9fafb;font-weight:600;}
+.ok{color:#059669;font-weight:600;} .bad{color:#dc2626;font-weight:600;} .skip{color:#b45309;font-weight:600;}
+.muted{color:#9ca3af;font-size:12.5px;}
+svg{max-width:100%;height:auto;}
+</style></head><body>
+<h1>自动化测试报告</h1>
+<div class="meta">生成时间：${fmtDateTime(Math.floor(Date.now()/1000))} · 时间范围：${esc(range)} · 项目数：${projs.length}</div>
+<h2>一、项目门禁概览</h2>
+<table><thead><tr><th>项目</th><th>ID</th><th>最近门禁</th><th>通过/总数</th><th>环境</th></tr></thead><tbody>${rows}</tbody></table>
+<h2>二、通过率趋势</h2>
+${chartSVG}
+<h2>三、最不稳定的场景</h2>
+${insHTML}
+<h2>四、失败原因聚类</h2>
+${gsHTML}
+</body></html>`;
+    downloadFile(`测试报告_${stamp}.html`,html,'text/html;charset=utf-8');
+    showToast('已导出完整报告 HTML');
+  }
+}
+function setupTrendCard(projs){
+  const withTrend=(projs||[]).filter(p=>TREND[p.pid]&&(TREND[p.pid].snapshots||[]).length);
+  const card=document.getElementById('trendCard');
+  if(!withTrend.length){card.style.display='none';return;}
+  card.style.display='';
+  const sel=document.getElementById('trendProj');
+  sel.innerHTML=withTrend.map(p=>`<option value="${jsq(p.pid)}">${esc(p.name||p.pid)}</option>`).join('');
+  setTrendMode(TREND_MODE);
+}
+async function renderReports(){
+  const r=await fetch('/api/projects'); const d=await r.json();
+  const projs=d.projects||[];
+  REP_PROJS=projs;   // 供导出使用
+  // 预载各项目趋势（失败不影响主渲染）
+  const q='limit=200'+(TREND_DAYS?('&days='+TREND_DAYS):'');
+  await Promise.all(projs.map(async p=>{
+    try{const tr=await fetch('/api/projects/'+encodeURIComponent(p.pid)+'/trends?'+q);
+      TREND[p.pid]=await tr.json();}catch(e){TREND[p.pid]=null;}
+  }));
+  const withRep=projs.filter(p=>p.reg);
+  let totalScn=0,totalPass=0,totalFail=0,totalSkip=0;
+  withRep.forEach(p=>{totalScn+=(p.reg.total||0);totalPass+=(p.reg.passed||0);totalFail+=(p.reg.failed||0);totalSkip+=(p.reg.skipped||0);});
+  const passedProjs=withRep.filter(p=>p.reg.all_pass&&p.reg.total>0).length;
+  document.getElementById('repSummary').innerHTML=`
+    <div class="stat"><div class="k">接入项目</div><div class="v s-info">${projs.length}</div></div>
+    <div class="stat"><div class="k">已出报告</div><div class="v s-purple">${withRep.length}</div></div>
+    <div class="stat"><div class="k">最近通过</div><div class="v s-ok">${passedProjs}</div></div>
+    <div class="stat"><div class="k">场景 通过/失败/跳过</div><div class="v">${totalPass}<span style="color:var(--ok)"> ✓</span> · ${totalFail}<span style="color:var(--bad)"> ✗</span> · ${totalSkip}<span style="color:var(--warn)"> ⊘</span></div></div>`;
+  const list=document.getElementById('repList');
+  document.getElementById('repEmpty').style.display=projs.length?'none':'block';
+  list.innerHTML='';
+  projs.forEach(p=>{
+    const reg=p.reg;
+    let badge;
+    if(!reg){badge='<span class="badge none">尚未生成报告</span>';}
+    else if(reg.all_pass){badge=`<span class="badge ok">● 通过 ${reg.passed}/${reg.total}</span>`;}
+    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">● 未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
+    const rows=(reg&&reg.results||[]).map(s=>{
+      const res=s.result||'';
+      const rb=res==='PASS'?'<span class="badge ok">通过</span>':(res==='FAIL'?'<span class="badge bad">失败</span>':(res==='SKIP'?'<span class="badge skip">跳过</span>':'<span class="badge gray">'+esc(res||'?')+'</span>'));
+      const tb=s.type==='api_smoke'?'<span class="badge info">冒烟</span>':`<span class="badge purple">${esc(s.type)}</span>`;
+      const detail=(res&&res!=='PASS'&&s.detail)?`<div class="sc-detail">${esc(s.detail)}</div>`:'';
+      const tgt=s.url||s.method||'';
+      const hist=((TREND[p.pid]||{}).scenes||{})[s.name]||[];
+      return `<tr>
+        <td><div class="sc-name">${esc(s.name||'(未命名)')}${sceneDots(hist)}</div>${detail}</td>
+        <td>${tb}</td>
+        <td style="white-space:nowrap">${rb}</td>
+        <td class="sc-url">${esc(tgt)}</td>
+        <td style="font-family:var(--mono);font-size:11.5px;color:var(--muted)">${esc(s.expect||'')}</td>
+        <td class="op"><button class="btn sm" title="只重跑该场景，结果合并回本报告" onclick="event.stopPropagation();rerunScene('${jsq(p.pid)}','${jsq(s.name)}',this)">${svg('refresh')} 重跑</button></td>
+      </tr>`;
+    }).join('');
+    const div=document.createElement('div'); div.className='rep-card';
+    div.innerHTML=`
+      <div class="rh" onclick="toggleRep('rep-${esc(p.pid)}')">
+        <div><div class="rname">${esc(p.name||p.pid)}</div><div class="renv">${esc(p.base_url)}</div></div>
+        <div style="display:flex;gap:10px;align-items:center">${badge}
+          ${p.has_report?`<button class="btn sm" onclick="event.stopPropagation();openReportModal('${esc(p.pid)}')">${svg('eye')} 完整报告</button>`:''}</div>
+      </div>
+      <div class="rsum">${reg?`通过 ${reg.passed} · 失败 ${reg.failed} · 跳过 ${reg.skipped} · 共 ${reg.total} 个场景（点击展开明细）`:'跑一次「核心回归」即可生成报告'}</div>
+      ${rows?`<table class="rep-table" id="rep-${esc(p.pid)}"><thead><tr><th>场景</th><th>类型</th><th>结果</th><th>接口 / 命令</th><th>期望</th><th class="op">操作</th></tr></thead><tbody>${rows}</tbody></table>`:''}`;
+    list.appendChild(div);
+  });
+  setupTrendCard(projs);
+  // 两张卡独立判断：可能只有"高频失败原因"而没有"高频失败场景"
+  const hasIns=renderInsights(projs);
+  const hasClu=renderClusters(projs);
+  const ic=document.getElementById('insightCard');
+  if(ic) ic.style.display=(hasIns||hasClu)?'':'none';
+}
+function toggleRep(id){const t=document.getElementById(id);if(t)t.classList.toggle('show');}
+let repCurrentPid='';
+function openReportModal(pid){
+  repCurrentPid=pid;
+  document.getElementById('repModalTitle').textContent='报告 · '+pid;
+  document.getElementById('repModalSub').textContent='由需求生成的用例与核心回归结果';
+  document.getElementById('repFrame').src='/reports/'+encodeURIComponent(pid)+'/report.html';
+  document.getElementById('repMask').classList.add('show');
+}
+function closeRepModal(){document.getElementById('repMask').classList.remove('show');document.getElementById('repFrame').src='';repCurrentPid='';}
+function openRepInTab(){if(repCurrentPid)window.open('/reports/'+encodeURIComponent(repCurrentPid)+'/report.html','_blank');}
+
+/* 单场景重跑：提交任务 -> 轮询 -> 完成后刷新报告/自动化页
+   后端只合并该场景的结果到 regression.json，不会覆盖其它场景的历史记录。
+   转义：场景名可能含引号/反斜杠，拼进 onclick 前必须 jsq() */
+function jsq(s){return String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/[\r\n]+/g,' ');}
+async function rerunScene(pid,name,btn){
+  let old='';
+  if(btn){old=btn.innerHTML;btn.classList.add('busy');btn.innerHTML='重跑中…';}
+  const restore=()=>{if(btn){btn.classList.remove('busy');btn.innerHTML=old||'重跑';}};
+  try{
+    const r=await fetch('/api/projects/'+encodeURIComponent(pid)+'/rerun_scene',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:name})});
+    const d=await r.json();
+    if(!d.ok){showToast('重跑提交失败：'+(d.error||'未知错误'),'bad');restore();return;}
+    showToast('已提交重跑：'+name);
+    const tid=d.task_id,t0=Date.now();
+    const timer=setInterval(async()=>{
+      try{
+        const rr=await fetch('/api/tasks/'+tid); const td=await rr.json();
+        const t=td.task||{};
+        const done=t.status==='success'||t.status==='failed';
+        if(done||Date.now()-t0>180000){
+          clearInterval(timer);
+          const m=String(t.log||'').match(/->\s*(PASS|FAIL|SKIP)/);
+          const scn=m?m[1]:(t.status==='success'?'完成':'失败');
+          if(!done){showToast('重跑超时，请在任务页查看日志','warn');}
+          else if(t.status==='failed'){showToast('重跑未成功：'+name+'（详见任务日志）','bad');}
+          else{showToast('重跑完成：'+name+' → '+scn,scn==='PASS'?'ok':(scn==='FAIL'?'bad':'warn'));}
+          if(typeof renderReports==='function') renderReports();
+          if(typeof renderAutomation==='function') renderAutomation();
+          restore();
+        }
+      }catch(e){clearInterval(timer);restore();}
+    },1500);
+  }catch(e){showToast('重跑请求异常：'+e,'bad');restore();}
+}
+
+// ---------- 资料库 ----------
+async function renderKnowledge(){
+  const r=await fetch('/api/docs'); const d=await r.json();
+  kbData=d.docs||[];
+  const list=document.getElementById('kbList');
+  list.innerHTML='';
+  if(!kbData.length){list.innerHTML='<div class="hint" style="padding:16px">docs/ 下暂无文档</div>';return;}
+  kbData.forEach((doc,i)=>{
+    const div=document.createElement('div');
+    div.className='kb-item'+(i===0?' active':'');
+    div.dataset.name=doc.name;
+    div.innerHTML=`<div class="t">${esc(doc.name)}</div><div class="m">${doc.mtime} · ${(doc.size/1024).toFixed(1)} KB</div>`;
+    div.onclick=()=>openDoc(doc.name,div);
+    list.appendChild(div);
+  });
+  openDoc(kbData[0].name,list.firstChild);
+}
+async function openDoc(name,el){
+  document.querySelectorAll('.kb-item').forEach(e=>e.classList.remove('active'));
+  if(el)el.classList.add('active');
+  const pane=document.getElementById('kbPane');
+  pane.innerHTML='<div class="placeholder"><div style="font-size:13px">加载中…</div></div>';
+  const r=await fetch('/api/docs/'+encodeURIComponent(name)); const d=await r.json();
+  if(!d.ok){pane.innerHTML=`<div class="placeholder">读取失败：${esc(d.error)}</div>`;return;}
+  pane.innerHTML=mdToHtml(d.content);
+}
+function mdToHtml(md){
+  const e=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const lines=md.replace(/\r/g,'').split('\n');
+  let html='',i=0,inCode=false,buf=[];
+  const inline=s=>e(s)
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  while(i<lines.length){
+    let line=lines[i];
+    if(/^```/.test(line)){if(inCode){html+='<pre class="md-code"><code>'+e(buf.join('\n'))+'</code></pre>';buf=[];inCode=false;}else{inCode=true;}i++;continue;}
+    if(inCode){buf.push(line);i++;continue;}
+    let m;
+    if(m=line.match(/^(#{1,4})\s+(.*)$/)){const l=m[1].length;html+=`<h${l} class="md-h${l}">${inline(m[2])}</h${l}>`;i++;continue;}
+    if(/^\s*[-*]\s+/.test(line)){let items=[];while(i<lines.length&&/^\s*[-*]\s+/.test(lines[i])){items.push('<li>'+inline(lines[i].replace(/^\s*[-*]\s+/,''))+'</li>');i++;}html+='<ul class="md-ul">'+items.join('')+'</ul>';continue;}
+    if(/^\s*\d+\.\s+/.test(line)){let items=[];while(i<lines.length&&/^\s*\d+\.\s+/.test(lines[i])){items.push('<li>'+inline(lines[i].replace(/^\s*\d+\.\s+/,''))+'</li>');i++;}html+='<ol class="md-ol">'+items.join('')+'</ol>';continue;}
+    if(line.trim()===''){i++;continue;}
+    html+='<p class="md-p">'+inline(line)+'</p>';i++;
+  }
+  if(inCode)html+='<pre class="md-code"><code>'+e(buf.join('\n'))+'</code></pre>';
+  return html;
+}
+
+// ---------- 技能 ----------
+async function loadSkills(){
+  const r=await fetch('/api/skills'); const d=await r.json();
+  const list=document.getElementById('skillList');
+  list.innerHTML='';
+  if(!d.skills.length){list.innerHTML='<div class="empty">agent-skills/ 下暂无技能</div>';return;}
+  const term=searchTerm();
+  d.skills.filter(s=>(s.name||s.dir||'').toLowerCase().includes(term)).forEach(s=>{
+    const div=document.createElement('div');
+    div.className='skill-row';
+    div.innerHTML=`<div style="min-width:0"><div class="name">${esc(s.name)} <span class="dir">· ${esc(s.dir)}</span></div>
+      <div class="desc">${esc(s.description||'（无描述）')}</div></div>
+      <label class="switch" title="${s.enabled?'启用中':'已停用'}">
+        <input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.dir)}',this)">
+        <span class="track"></span><span class="knob"></span></label>`;
+    list.appendChild(div);
+  });
+}
+async function toggleSkill(dir,el){
+  const r=await fetch('/api/skills/'+dir+'/toggle',{method:'POST'}); const d=await r.json();
+  if(!d.ok){el.checked=!el.checked;alert('操作失败：'+d.error);}
+}
+
+// ---------- 模型维护 ----------
+async function renderModels(){
+  const r=await fetch('/api/models'); const d=await r.json();
+  const cfg=d.config||{}, keys=d.keys||{};
+  const a=document.getElementById('keyAnthropic'), g=document.getElementById('keyGoogle');
+  a.className='key-state '+(keys.anthropic?'on':'off');
+  a.innerHTML=`<span class="kdot ${keys.anthropic?'on':''}"></span><span class="txt">${keys.anthropic?'已配置':'未配置'}</span>`;
+  g.className='key-state '+(keys.google?'on':'off');
+  g.innerHTML=`<span class="kdot ${keys.google?'on':''}"></span><span class="txt">${keys.google?'已配置':'未配置'}</span>`;
+  document.getElementById('mProvider').value=cfg.provider||'anthropic';
+  document.getElementById('mModel').value=cfg.model||'';
+  document.getElementById('mBase').value=cfg.base_url||'';
+}
+async function saveModel(){
+  const btn=document.getElementById('btnSaveModel'); btn.disabled=true; btn.textContent='保存中…';
+  const body={provider:document.getElementById('mProvider').value,model:document.getElementById('mModel').value.trim(),base_url:document.getElementById('mBase').value.trim()};
+  const r=await fetch('/api/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  btn.disabled=false; btn.textContent='保存配置';
+  if(!d.ok){alert('保存失败：'+(d.error||''));return;}
+  btn.textContent='已保存 ✓'; setTimeout(()=>btn.textContent='保存配置',1500);
+}
+
+// ---------- 报告 / 看板 ----------
+function openReport(url){window.open(url,'_blank');}
+async function refreshDashboard(){
+  const r=await fetch('/api/dashboard',{method:'POST'}); const d=await r.json();
+  if(!d.ok){alert('失败：'+d.error);return;}
+  const check=setInterval(async()=>{
+    const t=await (await fetch('/api/tasks/'+d.task_id)).json();
+    if(t.ok&&t.task.status!=='running'){clearInterval(check);window.open('/reports/dashboard.html','_blank');}
+  },800);
+}
+
+// ---------- 新建项目 ----------
+function openModal(){document.getElementById('modalMask').classList.add('show');}
+function closeModal(){document.getElementById('modalMask').classList.remove('show');document.getElementById('formErr').style.display='none';}
+async function createProject(){
+  const btn=document.getElementById('btnCreate'); btn.disabled=true; btn.textContent='创建中…';
+  const body={
+    pid:document.getElementById('f_pid').value.trim(),
+    name:document.getElementById('f_name').value.trim(),
+    base_url:document.getElementById('f_base').value.trim(),
+    owner:document.getElementById('f_owner').value.trim(),
+    auth_type:document.getElementById('f_auth').value,
+    login_url:document.getElementById('f_login').value.trim(),
+    user_env:document.getElementById('f_user').value.trim(),
+    pass_env:document.getElementById('f_pass').value.trim(),
+    requirements:document.getElementById('f_req').value,
+  };
+  const r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  btn.disabled=false; btn.textContent='创建项目';
+  if(!d.ok){const e=document.getElementById('formErr');e.textContent='创建失败：'+d.error;e.style.display='block';return;}
+  closeModal();
+  ['f_pid','f_name','f_base','f_owner','f_req'].forEach(id=>document.getElementById(id).value='');
+  renderProjects();
+}
+
+// ---------- 项目详情 ----------
+let detailPid=null;
+async function openDetail(pid){
+  detailPid=pid;
+  document.getElementById('detailTitle').textContent=`项目详情 · ${pid}`;
+  document.getElementById('detailErr').style.display='none';
+  const r=await fetch(`/api/projects/${pid}/files`); const d=await r.json();
+  if(!d.ok){alert('读取失败：'+d.error);return;}
+  document.getElementById('d_requirements').value=d.files.requirements||'（暂无 requirements.md）';
+  document.getElementById('d_regression').value=d.files.regression||'（暂无 regression.yaml）';
+  document.getElementById('d_cases').value=d.files.cases||'（尚未生成用例，请先跑一次全流程）';
+  switchTab('requirements');
+  document.getElementById('detailMask').classList.add('show');
+}
+function switchTab(tab){
+  ['requirements','regression','cases'].forEach(t=>{
+    document.getElementById('d_'+t).style.display=t===tab?'block':'none';
+    const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
+    if(b)b.classList.toggle('active',t===tab);
+  });
+  const gen=document.getElementById('btnGenCases');
+  if(gen) gen.style.display=tab==='cases'?'':'none';
+  document.getElementById('d_hint').textContent=tab==='cases'
+    ? '用例由需求生成（规则版：每条需求拆功能/边界/异常三例）。点「立即生成用例」可按当前需求重新生成。'
+    : '可直接编辑保存；保存后下一次执行即生效。';
+}
+/* 按当前需求文本立即生成用例，无需跑全流程 */
+async function generateCases(){
+  if(!detailPid)return;
+  const btn=document.getElementById('btnGenCases'); btn.disabled=true; btn.textContent='生成中…';
+  const err=document.getElementById('detailErr'); err.style.display='none';
+  try{
+    // 带上当前需求文本，保证「所见即所生成」（同时落盘，避免用了旧的 requirements.md）
+    const req=document.getElementById('d_requirements').value||'';
+    const body=(req && req.indexOf('（暂无')!==0)?{requirements:req}:{};
+    const r=await fetch(`/api/projects/${encodeURIComponent(detailPid)}/cases`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!d.ok){
+      err.textContent='生成失败：'+(d.error||'未知错误'); err.style.display='block'; return;
+    }
+    document.getElementById('d_cases').value=d.markdown||'';
+    const tip=d.llm_available?'':'（规则版：配置 LLM key 后可切换更智能的生成）';
+    err.style.color='var(--ok,#10b981)';
+    err.textContent=`已生成：${d.requirements} 条需求 → ${d.cases} 条用例 ${tip}`;
+    err.style.display='block';
+    setTimeout(()=>{err.style.display='none';err.style.color='';},4000);
+  }catch(e){
+    err.textContent='请求失败：'+e; err.style.display='block';
+  }finally{
+    btn.disabled=false; btn.textContent='立即生成用例';
+  }
+}
+function closeDetail(){document.getElementById('detailMask').classList.remove('show');}
+async function saveFiles(){
+  if(!detailPid)return;
+  const btn=document.getElementById('btnSaveFiles'); btn.disabled=true; btn.textContent='保存中…';
+  const body={requirements:document.getElementById('d_requirements').value,regression:document.getElementById('d_regression').value};
+  const r=await fetch(`/api/projects/${detailPid}/files`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  btn.disabled=false; btn.textContent='保存需求与配置';
+  if(!d.ok){const e=document.getElementById('detailErr');e.textContent='保存失败：'+d.error;e.style.display='block';return;}
+  btn.textContent='已保存 ✓'; setTimeout(()=>btn.textContent='保存需求与配置',1500);
+}
+
+// ---------- 搜索 ----------
+function searchTerm(){return (document.getElementById('searchInput').value||'').trim().toLowerCase();}
+function applySearch(){
+  if(currentPage==='projects') renderProjects();
+  else if(currentPage==='automation') renderAutomation();
+  else if(currentPage==='skills') loadSkills();
+  else if(currentPage==='knowledge'){const t=searchTerm();document.querySelectorAll('.kb-item').forEach(el=>{el.style.display=el.dataset.name.toLowerCase().includes(t)?'':'none';});}
+}
+
+// 关闭弹窗（点遮罩）
+document.querySelectorAll('.mask').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('show');}));
+
+renderProjects();
+</script>
+</body>
+</html>

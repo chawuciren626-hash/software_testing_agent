@@ -1,0 +1,143 @@
+# software_testing_agent · 软件测试智能体
+
+一个从 0 到 1 搭建的「软件测试智能体」：以开源项目 **agentic-test-explorer**（MIT）为基座，
+叠加**接口自动化、需求→用例、报告/CI、可视化 Web 控制台**等扩展能力，把测试全流程串成闭环：
+
+> 需求分析 → 测试用例 → 接口 / Web 自动化 → 测试报告 → 性能 / 安全
+
+基座提供「LLM 驱动、用真实浏览器探索任意 Web 应用」的核心能力（LangGraph Swarm + Playwright + Claude/Gemini）；
+本仓库在其之上补齐了工程化落地所需的 CLI 编排、接口回归、需求转用例与 Web 控制台。
+
+---
+
+## ✨ 核心特性
+
+- **统一项目登记与多项目治理**：一个 `project_manager` 命令管理公司内所有被测项目（元数据 / 测试环境 / 认证 / 需求 / 回归清单）。
+- **接口自动化（零 LLM 依赖）**：`extensions/api_testing` 基于 `pytest + requests`，不需要任何 LLM Key 即可独立跑通；被测服务不可达时自动跳过，不污染结果。
+- **需求 → 测试用例生成**：`extensions/requirements_to_cases` 提供零依赖的规则版生成器（按关键词拆需求草稿），可选接入 LLM 做增强。
+- **核心业务回归 + 门禁**：声明式回归清单（`api_smoke` / `pytest_marker` / `pytest_node`），环境不可达导致全 SKIP 时**不判绿**，避免 CI 假绿。
+- **可视化 Web 控制台**：`web_console`（Flask + 原生前端），含项目 / 任务 / 自动化 / 资料库 / 技能 / 模型维护 6 大页面，报告弹窗内可查看分组用例卡片与回归结果。
+- **报告增强**：失败原因聚类、新增/老毛病标记、跨项目趋势对比、不稳定场景洞察。
+- **跨项目看板**：一键生成各项目最近一次回归与门禁状态的总览。
+
+---
+
+## 📁 目录结构
+
+```
+software_testing_agent/
+├── project_manager.py          # 统一 CLI 入口（项目登记 / 全流程 / 回归 / 看板）
+├── software_testing_agent.py   # 基座 LangGraph 探索测试入口
+├── config.yaml / .example      # 基座配置（app / auth / skills / llm）
+├── mcp_servers.json / .example # MCP 服务器配置
+├── extensions/                 # 本仓库新增的扩展能力
+│   ├── api_testing/            # 接口自动化（pytest + requests）
+│   ├── requirements_to_cases/  # 需求 → 测试用例生成
+│   ├── reporting/              # 报告与 CI 增强
+│   ├── perf_security/          # 性能 / 安全探索测试骨架
+│   └── regression/             # 核心业务回归执行引擎
+├── web_console/                # 可视化控制台
+│   ├── app.py                  # Flask 后端（薄封装，调用 project_manager）
+│   ├── run_store.py            # 任务历史 / 回归快照 SQLite 持久化
+│   ├── desktop.py              # 桌面端外壳（可选）
+│   └── templates/index.html   # 单页前端（原生 JS，无框架）
+├── agent-skills/               # Bring-Your-Own Skills（SKILL.md 规范）
+├── docs/                       # 规划 / 分析文档
+├── projects/                   # 本地项目登记（⚠️ 不入库，见下方说明）
+├── src/ tests/ missions/       # 基座源码 / 测试 / 任务
+├── AGENTS.md                   # 基座 Agent 说明
+├── ARCHITECTURE_GUIDE.md      # 基座架构指南
+└── LICENSE                     # MIT
+```
+
+> 基座（agentic-test-explorer）的原始说明已保留在 [`docs/BASE_README_agentic-test-explorer.md`](docs/BASE_README_agentic-test-explorer.md)，
+> 架构与扩展规划见 [`docs/ARCHITECTURE_AND_EXTENSIONS.md`](docs/ARCHITECTURE_AND_EXTENSIONS.md)，项目登记模型见 [`docs/PROJECT_REGISTRY.md`](docs/PROJECT_REGISTRY.md)。
+
+---
+
+## 🚀 快速开始
+
+### 1. 环境要求
+- Python 3.12+
+- 建议使用虚拟环境（仓库根 `.venv`）
+
+### 2. 安装依赖
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+playwright install chromium     # 仅需 Web 探索/自动化时
+```
+
+### 3. 配置（复制示例并填入你的值）
+```bash
+cp .env.example .env            # 填入 ANTHROPIC_API_KEY / GOOGLE_API_KEY（可选，接口自动化不需要）
+cp config.yaml.example config.yaml
+cp mcp_servers.json.example mcp_servers.json
+```
+> 接口自动化（API）**无需 LLM Key**；只有在运行基座「LLM 驱动探索测试」时才需要 Key。
+
+### 4. 启动 Web 控制台
+```bash
+.venv\Scripts\python web_console/app.py
+# 打开 http://127.0.0.1:8765
+```
+控制台提供：项目登记、任务执行与历史、报告查看与导出、失败聚类、需求转用例、技能/模型维护等。
+
+### 5. CLI 速查
+```bash
+python project_manager.py create        # 交互式新建项目
+python project_manager.py list           # 列出已接入项目
+python project_manager.py info <id>      # 查看项目详情
+python project_manager.py run <id>       # 全流程：需求→用例→接口→回归→报告
+python project_manager.py regression <id># 仅核心业务回归
+python project_manager.py rerun <id> --scene <场景名>  # 重跑单个核心场景
+python project_manager.py dashboard      # 生成跨项目总览看板
+```
+
+---
+
+## 🗂️ 项目模型（`projects/<id>/`）
+
+每个公司项目在本地登记为一个目录，包含：
+
+| 文件 | 说明 |
+| --- | --- |
+| `project.yaml` | 元数据 + 测试环境地址 + 认证（**只存环境变量名，真实密钥放根 `.env`**） |
+| `requirements.md` | 需求描述（用于需求→用例） |
+| `regression.yaml` | 核心业务场景声明（api_smoke / pytest_marker / pytest_node） |
+| `artifacts/` | 产物（报告、回归 JSON、Allure 结果，**不入库**） |
+
+> ⚠️ **演示 / 示例测试项目属于本地运行时数据，不纳入本仓库。**
+> `.gitignore` 已整体排除 `projects/`，避免把个人/公司项目配置、密钥与产物提交到公开仓库。
+> 接入你自己的项目时，在本地 `projects/` 下登记即可，仓库只保留框架与扩展代码。
+
+---
+
+## 🧩 扩展模块（`extensions/`）
+
+- **api_testing**：`pytest + requests` 接口自动化，声明式 `expect_json`（支持点路径与 `__not_null__`），服务不可达自动 skip。
+- **requirements_to_cases**：把 `requirements.md` 按规则拆成用例草稿（功能/边界/异常 + 优先级 + 可自动化标记），无需 LLM。
+- **reporting**：生成项目级 HTML 报告（分组用例卡片 + 回归表格 + 门禁状态）。
+- **perf_security**：性能 / 安全探索测试骨架（待 LLM Key 后串联）。
+- **regression**：核心业务回归执行与单场景重跑合并。
+
+---
+
+## 🔐 密钥与 `.gitignore` 约定
+
+下列内容**禁止入库**（已在 `.gitignore` 中排除）：
+
+- `.env`、`config.yaml`、`mcp_servers.json`、`models_config.json`（保留对应 `.example`）
+- `projects/`（含各项目配置、需求、回归清单与产物）
+- `runs.db`、`.workbuddy/`、Allure 结果、截图预览
+- `dist/`、`build/`、`*.spec`、桌面启动脚本（本仓库以 Web 端为主）
+
+提交前请再次确认：`git status` 中不应出现 `.env`、密钥文件或 `projects/` 下的任何内容。
+
+---
+
+## 📜 许可证
+
+本项目基于 [agentic-test-explorer](https://github.com/srbarrios/agentic-test-explorer)（MIT）二次开发，
+遵循 **MIT 许可证**。基座原版说明见 [`docs/BASE_README_agentic-test-explorer.md`](docs/BASE_README_agentic-test-explorer.md)。
