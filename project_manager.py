@@ -780,6 +780,47 @@ tr.skip td:nth-child(6){{color:#b45309;font-weight:600;}}
     print(f"\n看板已生成：{out}")
 
 
+def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] = None) -> Path:
+    """统一流水线：需求 -> 用例 -> [接口自动化] -> 报告总览。
+
+    供 CLI ``run`` 与轻量入口（software_testing_agent.py）共用，消除双入口漂移。
+    不依赖 LLM；有 LLM key 时需求→用例可经基座 ``make_llm`` 增强（见 generate_cases._llm_generate）。
+    """
+    # 1) 需求 -> 用例
+    sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+    import generate_cases as gc  # noqa: F401  (延迟导入，避免基座依赖常驻)
+    text = Path(req_file).read_text(encoding="utf-8")
+    items = gc.parse_requirements(text)
+    cases = gc.gen_cases(items)
+    cases_md = ROOT / "extensions" / "requirements_to_cases" / "cases.md"
+    cases_md.write_text(gc.to_markdown(cases, req_file), encoding="utf-8")
+    print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，生成 {len(cases)} 条用例 → {cases_md}")
+
+    # 2) 接口自动化（可选）
+    if run_api:
+        env = os.environ.copy()
+        if api_base:
+            env["BASE_URL"] = api_base
+        print("[2/3] 接口自动化：运行 pytest（被测服务不可达会自动 skip）...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "extensions/api_testing", "-v",
+             "--alluredir=allure-results"],
+            cwd=ROOT, env=env,
+        )
+        print(f"[2/3] 接口自动化：pytest 退出码 {result.returncode}")
+    else:
+        print("[2/3] 接口自动化：跳过（未加 --run-api）")
+
+    # 3) 报告总览
+    sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+    import generate_report as gr  # noqa: F401
+    html = gr.render()
+    out = ROOT / "test_report_index.html"
+    out.write_text(html, encoding="utf-8")
+    print(f"[3/3] 报告聚合：已生成 {out}")
+    return out
+
+
 # ----------------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------------
