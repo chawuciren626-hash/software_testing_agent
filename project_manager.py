@@ -445,6 +445,9 @@ WEB_FILE = "web.json"
 QUALITY_FILE = "quality.json"
 QUALITY_HISTORY_FILE = "quality_history.jsonl"
 
+# 新旧对比回看多少次历史执行（用于判断 flaky / persistent）
+_DIFF_WINDOW = 6
+
 
 def _step_perf_security(pdir: Path, users: Optional[int] = None,
                         iterations: Optional[int] = None,
@@ -938,8 +941,39 @@ def _web_card_html(wf: Dict[str, Any]) -> str:
     )
 
 
+def _step_diff(pid: str, pdir: Path, reg: Dict[str, Any],
+               run_store: Any = None) -> Optional[Dict[str, Any]]:
+    """失败项新旧对比：把「这次新红的」从「一直红的」里挑出来。
+
+    ⚠️ **必须在把本次结果写入快照（insert_snapshot）之前调用** ——
+    否则历史快照里最新一条就是本次自己，自己跟自己比，结论永远是"没有新增失败"。
+    这个顺序由 `tests/test_trend_diff.py::test_step_diff_excludes_current_from_history` 守护。
+
+    run_store 为 None 时（例如轻量入口没有 DB）只按"无历史"处理，仍会落盘一份
+    写明"无基线"的结论 —— 保持 run → 报告 → 控制台的口径一致。
+    """
+    sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+    import trend_diff as td  # noqa: E402
+
+    history: List[Dict[str, Any]] = []
+    if run_store is not None:
+        try:
+            history = run_store.list_snapshots(pid, limit=_DIFF_WINDOW)
+        except Exception as e:
+            print(f"  [新旧对比] 读取历史失败（不影响流程）：{e}", file=sys.stderr)
+    prev = history[-1] if history else None
+    payload = td.compare(reg.get("results") or [], prev=prev, history=history)
+    td.write_diff(pdir, payload)
+
+    print("  [新旧对比] " + (payload.get("headline") or ""))
+    if not (payload.get("baseline") or {}).get("available"):
+        print("           └ " + str((payload["baseline"] or {}).get("reason") or ""))
+    return payload
+
+
 def _step_defects(pid: str, pdir: Path, reg: Dict[str, Any],
-                  base_url: str = "") -> Optional[Dict[str, Any]]:
+                  base_url: str = "", diff: Optional[Dict[str, Any]] = None
+                  ) -> Optional[Dict[str, Any]]:
     """把失败的门禁项整理成**缺陷草稿**（`artifacts/defects.md` / `.json`）。
 
     性能安全与 Web 结论从既有产物读（这两道是可选步骤，可能没跑），
@@ -948,8 +982,17 @@ def _step_defects(pid: str, pdir: Path, reg: Dict[str, Any],
     sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
     import defects as df  # noqa: E402
 
+    # 新旧对比结论：调用方没传就从产物读（正常流程里 _step_diff 先跑过并已落盘）。
+    # 读不到就按"无对照"处理 —— 没有标签可以接受，编错的标签不行。
+    if diff is None:
+        try:
+            import trend_diff as _td  # noqa: E402
+            diff = _td.read_diff(pdir)
+        except Exception:
+            diff = None
+
     payload = df.build_defects(reg, _read_perf_security(pdir), _read_web(pdir),
-                               pid=pid, base_url=base_url)
+                               pid=pid, base_url=base_url, diff=diff)
     df.write_defects(pdir, payload)
     n = payload["counts"]["total"]
     env_n = payload["counts"]["env"]
@@ -973,6 +1016,84 @@ def _read_defects(pdir: Path) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return df.read_defects(pdir)
+
+
+def _read_diff(pdir: Path) -> Optional[Dict[str, Any]]:
+    """失败项新旧对比结论（`artifacts/diff.json`）。没跑过就没有，不编。"""
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+        import trend_diff as td  # noqa: E402
+    except Exception:
+        return None
+    return td.read_diff(pdir)
+
+
+_DIFF_ICON = {"regressed": "🔺", "new": "🆕", "persistent": "🔁",
+              "flaky": "🎲", "recovered": "✅", "unknown": "❔"}
+_DIFF_COLOR = {"regressed": "var(--bad)", "new": "var(--warn)",
+               "persistent": "var(--muted)", "flaky": "var(--info)",
+               "recovered": "var(--ok)", "unknown": "var(--muted-2)"}
+
+
+def _diff_card_html(dp: Dict[str, Any]) -> str:
+    """报告里的「本次新增失败」卡片。
+
+    存在的意义不是再列一遍失败，而是**回答先看哪一个**：
+    红同样的 5 个场景，看久了人就麻了；真正的信号是"相比上次新红的那个"。
+    """
+    items = dp.get("items") or []
+    base = dp.get("baseline") or {}
+    counts = dp.get("counts") or {}
+    labels = dp.get("labels") or {}
+
+    head = (f"<div class='card'><div class='card-title'>失败项新旧对比 "
+            f"<span class='count'>{len(items)}</span></div>")
+    if not base.get("available"):
+        head += (f"<div class='empty-case'>暂无可对照的基线 —— {_h(str(base.get('reason') or ''))}<br>"
+                 "因此<b>未作新旧判断</b>：没有有效基线还硬贴「新增失败」标签，"
+                 "等于用噪音刷注意力。</div></div>")
+        return head
+
+    focus = int(counts.get("regressed", 0)) + int(counts.get("new", 0))
+    line = _h(dp.get("headline") or "")
+    chips = "".join(
+        f"<span class='badge' style='color:{_DIFF_COLOR.get(k, 'var(--muted)')}'>"
+        f"{_DIFF_ICON.get(k, '')} {labels.get(k, k)} {counts.get(k, 0)}</span>"
+        for k in ("regressed", "new", "persistent", "flaky", "recovered")
+        if counts.get(k))
+    head += (f"<div style='font-size:13px;color:var(--muted);margin-bottom:8px'>"
+             f"对照基线：{_h(str(base.get('ts_text') or '—'))} · {line}</div>"
+             f"<div style='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px'>{chips}</div>")
+
+    if not items:
+        head += "<div class='empty-case'>本次没有失败项，也没有由失败转通过的场景。</div></div>"
+        return head
+
+    rows: List[str] = []
+    for it in items:
+        st = str(it.get("status") or "")
+        extra: List[str] = []
+        if int(it.get("streak") or 0) > 1:
+            extra.append(f"连续失败 {it['streak']} 次")
+        if it.get("window_runs"):
+            extra.append(f"近 {it['window_runs']} 次中失败 {it['window_fails']}")
+        if str(it.get("last_pass_text") or "—") != "—":
+            extra.append(f"上次通过 {it['last_pass_text']}")
+        tail = f"<span class='web-ev'>{'；'.join(extra)}</span>" if extra else ""
+        rows.append(
+            f"<tr><td style='white-space:nowrap;color:{_DIFF_COLOR.get(st, 'var(--muted)')}'>"
+            f"{_DIFF_ICON.get(st, '')} {labels.get(st, st)}</td>"
+            f"<td><b>{_h(str(it.get('name') or ''))}</b>{tail}</td>"
+            f"<td style='color:var(--muted)'>{_h(str(it.get('detail') or ''))}</td></tr>")
+
+    notes = "".join(f"<div class='web-ev'>· {_h(n)}</div>" for n in (dp.get("notes") or []))
+    if focus:
+        notes += ("<div class='web-ev' style='margin-top:6px'>· 建议优先处理标记为"
+                  "「回归 / 新增」的项；其余属于已知问题，按排期处理即可。</div>")
+    return (f"{head}<table class='tbl'><tr><th>判定</th><th>场景</th><th>说明</th></tr>"
+            f"{''.join(rows)}</table>{notes}"
+            "<div class='web-ev' style='margin-top:8px'>"
+            "本卡片只做「先看哪个」的排序提示，<b>不参与门禁判定</b>。</div></div>")
 
 
 def _defects_card_html(dp: Dict[str, Any]) -> str:
@@ -1193,6 +1314,10 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
     _dp = _read_defects(pdir)
     defects_card_html = _defects_card_html(_dp) if _dp else ""
 
+    # 失败项新旧对比（回答"先看哪一个"，不参与门禁判定）
+    _diff = _read_diff(pdir)
+    diff_card_html = _diff_card_html(_diff) if _diff else ""
+
     # 用例结构质量分（执行过需求→用例才有；只做展示与趋势，不做硬门禁）
     _q = _read_quality(pdir)
     quality_item = ""
@@ -1352,6 +1477,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 
 {defects_card_html}
 
+{diff_card_html}
+
 {quality_card_html}
 
 <div class='card'>
@@ -1484,12 +1611,19 @@ def cmd_run(args: argparse.Namespace) -> None:
                                    "summary": wf.get("summary", "")}
         _write_run_meta(pdir, **_meta_fields)
 
+    # 失败项新旧对比：**必须在写本次快照之前**做（此刻历史里还没有本次）
+    diff_payload: Optional[Dict[str, Any]] = None
+    try:
+        diff_payload = _step_diff(args.id, pdir, reg, run_store)
+    except Exception as e:      # 对比失败不能拖垮主流程
+        print(f"  [新旧对比] 失败（不影响流程）：{e}", file=sys.stderr)
+
     run_store.insert_snapshot(args.id, reg, trigger="run")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
 
     # 缺陷草稿：把"流水线上的红"整理成能提交给开发的缺陷单（不自动提单）
     try:
-        _step_defects(args.id, pdir, reg, base_url)
+        _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
     except Exception as e:      # 草稿生成失败不能拖垮主流程
         print(f"  [缺陷草稿] 生成失败（不影响流程）：{e}", file=sys.stderr)
 
@@ -1517,12 +1651,20 @@ def cmd_regression(args: argparse.Namespace) -> None:
     run_store.init_db(ROOT / "runs.db")
     sys.path.insert(0, str(ROOT / "extensions" / "memory"))
     import lessons as ls  # noqa: E402
+
+    # 失败项新旧对比：**必须在写本次快照之前**做（同上，否则自己跟自己比）
+    diff_payload: Optional[Dict[str, Any]] = None
+    try:
+        diff_payload = _step_diff(args.id, pdir, reg, run_store)
+    except Exception as e:
+        print(f"  [新旧对比] 失败（不影响门禁）：{e}", file=sys.stderr)
+
     run_store.insert_snapshot(args.id, reg, trigger="regression")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
 
     # 缺陷草稿：只跑回归也该拿到（性能安全/Web 结论从既有产物读，没跑就没有）
     try:
-        _step_defects(args.id, pdir, reg, base_url)
+        _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
     except Exception as e:      # 草稿生成失败不能影响门禁退出码
         print(f"  [缺陷草稿] 生成失败（不影响门禁）：{e}", file=sys.stderr)
 

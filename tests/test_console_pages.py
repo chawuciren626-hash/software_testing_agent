@@ -173,3 +173,48 @@ def test_quality_tab_renders_without_js_errors(console_url, browser_session):
         assert not errors, "质量页面有 JS 报错：" + " | ".join(errors[:3])
     finally:
         page.close()
+
+
+@needs_browser
+def test_diff_tab_renders_without_js_errors(console_url, browser_session):
+    """详情弹窗的「新旧对比」页必须真的渲染出内容，且没有 JS 报错。
+
+    只断言"HTML 里有 renderDiffPanel 这个字符串"是不够的 —— 函数体里一个
+    undefined 变量照样会让面板空白，而字符串检查照样通过。
+    """
+    page = browser_session.new_page(viewport={"width": 1500, "height": 1000})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    page.on("console", lambda m: errors.append(f"console.error: {m.text}")
+            if m.type == "error" else None)
+    try:
+        page.goto(console_url, wait_until="networkidle")
+        page.evaluate("switchTab('diff')")
+        page.wait_for_timeout(300)
+        page.evaluate("""() => renderDiffPanel({
+            has: true, focus_new: 1, headline: '本次新增失败 1 项',
+            baseline: {available: true, ts_text: '09-11 22:00'},
+            counts: {regressed: 1, new: 0, persistent: 1, flaky: 0, recovered: 0},
+            labels: {regressed: '回归（此前通过，这次失败）',
+                     persistent: '持续失败（历史无通过记录）'},
+            items: [
+              {name: '登录成功', status: 'regressed', streak: 1,
+               window_runs: 3, window_fails: 1, last_pass_text: '09-11 21:00',
+               detail: '断言失败'},
+              {name: '老毛病', status: 'persistent', streak: 5,
+               window_runs: 4, window_fails: 4, last_pass_text: '—', detail: ''}
+            ],
+            notes: ['有 1 项是历史一直失败']})""")
+        html = page.locator("#d_diff").inner_html()
+        assert "登录成功" in html, "场景没渲染出来"
+        assert "回归" in html, "判定标签没渲染出来"
+        assert "连续失败" in html, "连续次数没显示"
+        assert "不参与门禁判定" in html, "缺少「不参与门禁」的免责说明"
+        # 无数据：要给引导文案，而不是空白
+        page.evaluate("() => renderDiffPanel({has: false, baseline: "
+                      "{available: false, reason: '尚未生成'}, items: []})")
+        empty = page.locator("#d_diff").inner_html()
+        assert "尚未生成" in empty, "无数据时没有引导文案"
+        assert not errors, "新旧对比页面有 JS 报错：" + " | ".join(errors[:3])
+    finally:
+        page.close()

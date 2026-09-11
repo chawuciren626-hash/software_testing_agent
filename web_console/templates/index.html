@@ -580,6 +580,7 @@ svg{display:block;}
       <button class="btn tab sm" data-tab="web" onclick="switchTab('web')">Web 冒烟</button>
       <button class="btn tab sm" data-tab="quality" onclick="switchTab('quality')">用例质量</button>
       <button class="btn tab sm" data-tab="defects" onclick="switchTab('defects')">缺陷草稿</button>
+      <button class="btn tab sm" data-tab="diff" onclick="switchTab('diff')">新旧对比</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
@@ -589,6 +590,7 @@ svg{display:block;}
     <div id="d_web" class="ps-panel" style="display:none"></div>
     <div id="d_quality" class="ps-panel" style="display:none"></div>
     <textarea id="d_defects" class="mono" style="display:none" readonly></textarea>
+    <div id="d_diff" class="ps-panel" style="display:none"></div>
     <textarea id="d_webyaml" class="mono" style="display:none"></textarea>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
@@ -917,12 +919,27 @@ async function renderProjects(){
       defBadge=`<span class="badge ${(sev.S1||0)?'bad':'skip'}" title="${esc(tip2)}">`+
                `${svg('doc')} 待确认缺陷 ${n}</span>`;
     }
+    // 新增失败：只强调"这次多出来的红"，长期失败不重复占这张卡的注意力。
+    // 没有可用基线（首次运行 / 上次全 SKIP）时 counts 里不会有余地 —— 此时不显示徽标。
+    const dfp=p.diff;
+    let newBadge='';
+    if(dfp && (dfp.baseline||{}).available){
+      const c=dfp.counts||{};
+      const nn=Number(c.regressed||0)+Number(c.new||0);
+      if(nn>0){
+        const tip3='相比上一次，本次新增失败 '+nn+' 条'+'\n'+
+                   '回归 '+(c.regressed||0)+'（此前通过、本次失败） · 新出现 '+(c.new||0)+'\n'+
+                   '另有持续失败 '+(c.persistent||0)+' / 不稳定 '+(c.flaky||0)+' 项属于已知问题。';
+        newBadge=`<span class="badge bad" title="${esc(tip3)}">`+
+                 `${svg('doc')} 新增失败 ${nn}</span>`;
+      }
+    }
     const div=document.createElement('div');
     div.className='card'+(p.disabled?' disabled':'');
     const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
     div.innerHTML=`
       <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}${qBadge}${defBadge}</div></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}${qBadge}${newBadge}${defBadge}</div></div>
       <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
       <div class="ops">
         <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
@@ -1868,6 +1885,10 @@ async function openDetail(pid){
   renderQualityPanel(null, d.quality||null);
   fetch(`/api/projects/${encodeURIComponent(pid)}/quality`).then(r=>r.json())
     .then(qd=>renderQualityPanel(qd,null)).catch(()=>{});
+  // 失败项新旧对比：先用 files 里的数据立刻渲染，再用专用端点补全中文标签与文本摘要
+  renderDiffPanel(d.diff||null);
+  fetch(`/api/projects/${encodeURIComponent(pid)}/diff`).then(r=>r.json())
+    .then(dd=>renderDiffPanel(dd)).catch(()=>{});
   // 拉取 LLM 可用性，决定是否展示「LLM 智能生成」开关
   try{
     const s=await fetch('/api/llm/status'); const sd=await s.json();
@@ -1881,7 +1902,7 @@ async function openDetail(pid){
   document.getElementById('detailMask').classList.add('show');
 }
 function switchTab(tab){
-  ['requirements','regression','cases','lessons','perfsec','web','quality','defects'].forEach(t=>{
+  ['requirements','regression','cases','lessons','perfsec','web','quality','defects','diff'].forEach(t=>{
     const el=document.getElementById('d_'+t);
     el.style.display = t===tab ? (t==='perfsec'?'block':'block') : 'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
@@ -2080,6 +2101,63 @@ async function generateCases(){
    口径与 CLI/报告完全一致（都读 artifacts/quality.json）：
    两套口径比没有口径更糟。
    关键：必须显式说明「结构分 ≠ 用例质量」，否则满分会被误读成"用例没问题"。 */
+/* 失败项新旧对比：回答「先看哪一个」。
+
+   红同样的 N 个场景，看久了人就麻了（警报疲劳）；真正的信号是"相比上次新红的那个"。
+   注意这里的首都图标与判级文案全部由后端 labels / descs 提供，前端不另抄一份。 */
+function renderDiffPanel(d){
+  const box=document.getElementById('d_diff');
+  if(!box) return;
+  const data=d||null;
+  const base=(data&&data.baseline)||{};
+  const items=(data&&data.items)||[];
+  const counts=(data&&data.counts)||{};
+  const labels=(data&&data.labels)||{};
+  if(!items.length){
+    box.innerHTML='<div class="ps-empty">'
+      +esc(base.reason||'尚未生成（跑一次「全流程」或「核心回归」后自动计算）。')
+      +'<br>没有可对照的基线时<strong>不会硬贴「新增失败」标签</strong>'
+      +'——那等于用噪音刷注意力，比漏报更糟。</div>';
+    return;
+  }
+  const ICON={regressed:'\u{1F53A}',new:'\u{1F195}',persistent:'\u{1F501}',
+              flaky:'\u{1F3B2}',recovered:'\u2705',unknown:'\u2754'};
+  const ST={regressed:'bad',new:'warn',persistent:'muted',flaky:'info',
+            recovered:'ok',unknown:'muted'};
+  const KIND={regressed:'bad',new:'warn',persistent:'muted',flaky:'info',
+              recovered:'ok',unknown:'muted'};
+  const ORDER=['regressed','new','persistent','flaky','recovered','unknown'];
+  const chips=ORDER.filter(k=>counts[k]).map(k=>
+    '<span class="ps-tag '+ST[k]+'">'+ICON[k]+' '+esc(labels[k]||k)+' '+counts[k]+'</span>').join('');
+  const focus=Number(counts.regressed||0)+Number(counts.new||0);
+  const rows=items.map(it=>{
+    const st=it.status||'';
+    const extra=[];
+    if((it.streak||0)>1) extra.push('连续失败 '+it.streak+' 次');
+    if(it.window_runs) extra.push('近 '+it.window_runs+' 次中失败 '+it.window_fails);
+    if(it.last_pass_text && it.last_pass_text!=='—') extra.push('上次通过 '+it.last_pass_text);
+    return '<tr><td style="white-space:nowrap" class="'+ST[st]+'">'
+      +ICON[st]+' '+esc(labels[st]||st)+'</td>'
+      +'<td><strong>'+esc(it.name||'')+'</strong>'
+      +(extra.length?'<div class="q-hint">'+esc(extra.join('；'))+'</div>':'')+'</td>'
+      +'<td class="q-hint">'+esc(it.detail||'')+'</td></tr>';
+  }).join('');
+  const notes=(data.notes||[]).map(n=>'<div class="q-hint">· '+esc(n)+'</div>').join('');
+  box.innerHTML=
+    '<div class="ps-head '+(focus?'bad':'ok')+'">'
+      +'<span class="ps-verdict">'+focus+'</span>'
+      +'<span class="ps-sum">'+esc(data.headline||'')+(base.ts_text?' · 基线 '+esc(base.ts_text):'')+'</span>'
+      +'</div>'
+    +(chips?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">'+chips+'</div>':'')
+    +'<div class="ps-scroll"><table class="ps-tbl">'
+      +'<tr><th>判定</th><th>场景</th><th>说明</th></tr>'+rows+'</table></div>'
+    +'<div class="ps-warn">本面板只做<strong>「先看哪个」</strong>的排序提示，'
+      +'<strong>不参与门禁判定</strong>。'
+      +(focus?'建议优先处理标记为「回归 / 新增」的 '+focus+' 项；其余属于已知问题，按排期处理即可。':'')
+      +'</div>'
+    +(notes?'<div class="ps-sub">说明：'+notes+'</div>':'');
+}
+
 function renderQualityPanel(q, meta){
   const box=document.getElementById('d_quality');
   if(!box) return;

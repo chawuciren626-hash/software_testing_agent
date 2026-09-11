@@ -45,6 +45,11 @@ DEFECTS_JSON = "defects.json"
 _SEV_ORDER = ("S1", "S2", "S3", "S4")
 _SEV_LABEL = {"S1": "致命", "S2": "严重", "S3": "一般", "S4": "轻微"}
 
+# 新旧对比的排优先级（越靠前越该先看）。用于**同级严重度内**的二次排序：
+# 严重程度仍是主排序（S1 安全缺陷不会被"刚回归的 S2"挤到后面），
+# 但同为 S2 时，本次新引入的必须排在长期失败前面 —— 后者是新信息，前者是已知欠账。
+_CHANGE_RANK = {"regressed": 0, "new": 1, "persistent": 2, "flaky": 3}
+
 
 def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -73,6 +78,7 @@ def _from_regression(reg: Optional[Dict[str, Any]], base_url: str) -> List[Dict[
             why = "核心业务场景失败（超时，可能涉及稳定性）"
         out.append({
             "source": "核心回归",
+            "scene": str(_get(r, "name", "") or ""),      # 保留原始场景名，供新旧对比对齐
             "title": f"[回归] {_get(r, 'name', '(未命名场景)')}",
             "severity": sev,
             "severity_reason": why,
@@ -96,6 +102,7 @@ def _from_perf_security(ps: Optional[Dict[str, Any]], base_url: str) -> List[Dic
             continue
         out.append({
             "source": "性能与安全",
+            "scene": str(_get(c, "name", "") or ""),
             "title": f"[安全] {_get(c, 'name', '(未命名检查)')}",
             "severity": "S1",
             "severity_reason": "安全检查未通过（影响面不可控，建议优先处理）",
@@ -110,6 +117,7 @@ def _from_perf_security(ps: Optional[Dict[str, Any]], base_url: str) -> List[Dic
             continue
         out.append({
             "source": "性能与安全",
+            "scene": str(_get(t, "name", "") or ""),
             "title": f"[性能] {_get(t, 'name', '(未命名目标)')} 未达阈值",
             "severity": "S3",
             "severity_reason": "性能指标未达阈值（不阻断功能，影响体验/容量）",
@@ -142,6 +150,7 @@ def _from_web(web: Optional[Dict[str, Any]], base_url: str) -> List[Dict[str, An
         shots = _get(s, "screenshots", []) or []
         out.append({
             "source": "Web UI",
+            "scene": str(_get(s, "name", "") or ""),
             "title": f"[Web] {_get(s, 'name', '(未命名场景)')}",
             "severity": "S3" if flaky else "S2",
             "severity_reason": ("Web 场景失败（重试后通过，疑似抖动/不稳定）" if flaky
@@ -156,11 +165,36 @@ def _from_web(web: Optional[Dict[str, Any]], base_url: str) -> List[Dict[str, An
     return out
 
 
+def _annotate_changes(items: List[Dict[str, Any]],
+                      diff: Optional[Dict[str, Any]]) -> None:
+    """给每条缺陷标注「新旧」标签（regressed / new / persistent / flaky）。
+
+    按 `scene` 字段对齐，**不能用 title 反解**（`[回归] xxx` 的前缀一变就静默失效，
+    表现为"全部缺陷都没有新旧标签"这种无声降级）。
+    """
+    if not diff:
+        return
+    labels = diff.get("labels") or {}
+    smap = {str(it.get("name") or ""): it for it in (diff.get("items") or [])}
+    for d in items:
+        it = smap.get(str(d.get("scene") or ""))
+        if not it:
+            continue                       # 没有对照信息的保持无标签，不猜
+        d["change"] = str(it.get("status") or "")
+        d["change_label"] = labels.get(d["change"], "")
+        d["change_streak"] = int(it.get("streak") or 0)
+
+
 def build_defects(reg: Optional[Dict[str, Any]] = None,
                   ps: Optional[Dict[str, Any]] = None,
                   web: Optional[Dict[str, Any]] = None,
-                  pid: str = "", base_url: str = "") -> Dict[str, Any]:
+                  pid: str = "", base_url: str = "",
+                  diff: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """汇总三道门禁的失败项，产出缺陷草稿 + 环境问题 + 配置问题。
+
+    diff: `trend_diff.compare()` 的输出。传入后每条缺陷会带上 `change`
+    （regressed/new/persistent/flaky），并据此在同级严重度内调整次序。
+    不传则保持纯严重度排序（CLI 单独使用时仍可用）。
 
     返回：::
 
@@ -169,8 +203,10 @@ def build_defects(reg: Optional[Dict[str, Any]] = None,
     """
     items = (_from_regression(reg, base_url) + _from_perf_security(ps, base_url)
              + _from_web(web, base_url))
-    # 按严重程度排序，同类保持原顺序（稳定的输出便于 diff）
-    items.sort(key=lambda d: _sev_rank(d.get("severity", "S4")))
+    _annotate_changes(items, diff)
+    # 按严重程度排序，同类内按新旧排序（稳定的输出便于 diff）
+    items.sort(key=lambda d: (_sev_rank(d.get("severity", "S4")),
+                              _CHANGE_RANK.get(d.get("change", ""), 2)))
     for i, d in enumerate(items, 1):
         d["id"] = f"DEF-{i:03d}"
 
@@ -189,11 +225,38 @@ def build_defects(reg: Optional[Dict[str, Any]] = None,
     config_issues = [str(x) for x in (_get(web, "config_issues", []) or [])]
 
     by_sev = {s: sum(1 for d in items if d.get("severity") == s) for s in _SEV_ORDER}
+    by_change = {k: sum(1 for d in items if d.get("change") == k) for k in _CHANGE_RANK}
     return {"pid": pid, "base_url": base_url, "items": items,
             "env_issues": env_issues, "config_issues": config_issues,
             "counts": {"total": len(items), "by_severity": by_sev,
+                       "by_change": by_change,
                        "env": len(env_issues), "config": len(config_issues)},
             "generated_at": _now()}
+
+
+# Markdown 表格里的简短标签（完整的解释写在下面每项的详情区）
+_CHANGE_SHORT = {"regressed": "🔺 回归", "new": "🆕 新增",
+                 "persistent": "🔁 持续失败", "flaky": "🎲 不稳定"}
+
+# 提交缺陷时该怎么用这个标签 —— 面向"要提单的人"，不是面向看趋势的人
+_CHANGE_HINT = {
+    "regressed": "此前通过、本次失败，优先核实最近一次变更",
+    "new": "历史上没有通过记录，先确认场景/用例本身是否成立",
+    "persistent": "此前多次失败（非本次新增），若已在跟进请勿重复提单",
+    "flaky": "红绿交替，提交前先复跑几次确认可稳定复现",
+}
+
+
+def _change_cell(d: Dict[str, Any]) -> str:
+    """表格中的「新旧」单元；没有对照信息显示「—」，不猜。"""
+    c = str(d.get("change") or "")
+    if not c:
+        return "—"
+    txt = _CHANGE_SHORT.get(c, c)
+    streak = int(d.get("change_streak") or 0)
+    if streak > 1:
+        txt += f"（连续{streak}次）"
+    return txt
 
 
 def render_markdown(payload: Dict[str, Any]) -> str:
@@ -218,11 +281,12 @@ def render_markdown(payload: Dict[str, Any]) -> str:
     else:
         L.append("## 缺陷清单")
         L.append("")
-        L.append("| 编号 | 建议级别 | 来源 | 标题 | 实际 | 期望 |")
-        L.append("|---|---|---|---|---|---|")
+        L.append("| 编号 | 建议级别 | 新旧 | 来源 | 标题 | 实际 | 期望 |")
+        L.append("|---|---|---|---|---|---|---|")
         for d in items:
             L.append(f"| {d.get('id', '')} | {d.get('severity', '')}"
-                     f"（{_SEV_LABEL.get(d.get('severity', ''), '')}） | {d.get('source', '')} "
+                     f"（{_SEV_LABEL.get(d.get('severity', ''), '')}） "
+                     f"| {_md_cell(_change_cell(d))} | {d.get('source', '')} "
                      f"| {_md_cell(d.get('title', ''))} | {_md_cell(d.get('actual', ''))} "
                      f"| {_md_cell(d.get('expected', ''))} |")
         L.append("")
@@ -231,6 +295,9 @@ def render_markdown(payload: Dict[str, Any]) -> str:
             L.append("")
             L.append(f"- 建议级别：**{d.get('severity', '')}**"
                      f"（{_SEV_LABEL.get(d.get('severity', ''), '')}）—— {d.get('severity_reason', '')}")
+            if d.get("change"):
+                L.append(f"- 新旧判定：**{d.get('change_label') or d.get('change')}**"
+                         f" —— {_CHANGE_HINT.get(d.get('change', ''), '')}")
             steps = d.get("steps") or []
             if steps:
                 L.append("- 复现步骤：")

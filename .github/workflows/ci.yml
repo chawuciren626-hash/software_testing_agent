@@ -63,6 +63,7 @@ jobs:
             tests/test_gate_notify.py \
             tests/test_console_auth.py \
             tests/test_case_quality.py \
+            tests/test_trend_diff.py \
             tests/test_defects.py \
             tests/eval \
             -q

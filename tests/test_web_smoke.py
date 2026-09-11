@@ -758,3 +758,73 @@ def test_index_has_defects_tab_and_badge():
     assert 'data-tab="defects"' in html
     assert "d_defects" in html
     assert "待确认缺陷" in html
+
+
+# ---------- 失败项新旧对比（先看哪一个） ----------
+
+def test_diff_api_without_data(monkeypatch, tmp_path):
+    """没跑过 → has=False 且给出原因，而不是编一份"没有新增失败"（那是假安信息）。"""
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/diff").get_json()
+    assert d["ok"] is True and d["has"] is False
+    assert d["items"] == [] and d["baseline"]["available"] is False
+    assert "尚未生成" in d["baseline"]["reason"]
+
+
+def test_diff_api_with_data(monkeypatch, tmp_path):
+    """有数据时回传中文标签与纯文本摘要 —— 前端不另抄一份文案。"""
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "diff.json").write_text(
+        '{"headline":"本次新增失败 1 项","baseline":{"available":true,"ts_text":"09-11 22:00"},'
+        '"items":[{"name":"登录","status":"regressed","streak":1,"detail":"断言失败"}],'
+        '"counts":{"regressed":1,"new":0,"persistent":0,"flaky":0,"recovered":0},'
+        '"notes":["提示一条"],"focus_new":1}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/diff").get_json()
+    assert d["ok"] is True and d["has"] is True and d["focus_new"] == 1
+    assert d["labels"]["regressed"] == "回归（此前通过，这次失败）"
+    assert "登录" in (d["text"] or "")
+    assert "回归" in (d["text"] or "")
+
+
+def test_diff_api_unknown_project(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.get("/api/projects/nope/diff").status_code == 404
+
+
+def test_projects_api_exposes_diff(monkeypatch, tmp_path):
+    """项目列表要带对比结论（卡片「新增失败」徽标用）。"""
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "diff.json").write_text(
+        '{"baseline":{"available":true},"counts":{"regressed":2,"new":1}}',
+        encoding="utf-8")
+    _mk_tmp_project(tmp_path, "empty")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = {p["pid"]: p for p in client.get("/api/projects").get_json()["projects"]}
+    assert items["demo"]["diff"]["counts"]["regressed"] == 2
+    assert items["empty"]["diff"] is None
+
+
+def test_files_api_exposes_diff(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "diff.json").write_text('{"counts":{"new":1}}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["diff"]["counts"]["new"] == 1
+    assert d["defects"] is None or isinstance(d["defects"], dict)
+
+
+def test_index_has_diff_tab_and_badge():
+    """前端钩子：详情弹窗要有「新旧对比」标签，项目卡要有「新增失败」徽标。"""
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-tab="diff"' in html
+    assert "d_diff" in html
+    assert "renderDiffPanel" in html
+    assert "新增失败" in html

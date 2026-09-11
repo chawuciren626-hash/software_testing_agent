@@ -235,6 +235,7 @@ def api_projects() -> Any:
             "web": _read_web(pdir),
             "quality": pm._read_quality(pdir),
             "defects": pm._read_defects(pdir),
+            "diff": pm._read_diff(pdir),
             "disabled": pm.is_disabled(pdir),
         })
     return jsonify({"projects": items})
@@ -271,7 +272,9 @@ def api_project_files(pid: str) -> Any:
             perf_sec = None
     return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir),
                     "perf_security": perf_sec, "web": _read_web(pdir),
-                    "quality": pm._read_quality(pdir)})
+                    "quality": pm._read_quality(pdir),
+                    "defects": pm._read_defects(pdir),
+                    "diff": pm._read_diff(pdir)})
 
 
 def _llm_available() -> bool:
@@ -327,6 +330,34 @@ def api_project_quality(pid: str) -> Any:
                                "labels": labels, "hints": hints,
                                "dims_order": list(dims_meta)}
     payload.update(q)      # total / dims / delta / history / notes / counts / scored_at
+    return jsonify(payload)
+
+
+@app.get("/api/projects/<pid>/diff")
+def api_project_diff(pid: str) -> Any:
+    """失败项新旧对比（与报告同源，读 `artifacts/diff.json`）。
+
+    额外回传 `labels`（判定中文名）与 `text`（纯文本摘要），前端不另抄一份文案。
+    """
+    pdir = pm.PROJECTS_DIR / pid
+    if not (pdir / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    d = pm._read_diff(pdir)
+    if not d:
+        return jsonify({"ok": True, "has": False, "items": [], "counts": {},
+                        "baseline": {"available": False,
+                                     "reason": "尚未生成（跑一次「全流程」或「核心回归」后自动计算）"}})
+    labels, descs, text = {}, {}, ""
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+        import trend_diff as td  # noqa: E402
+        labels, descs = td.STATUS_LABEL, td.STATUS_DESC
+        text = td.render_text(d)
+    except Exception:      # 元信息拿不到也要能展示结论，别让整个面板挂掉
+        pass
+    payload: Dict[str, Any] = {"ok": True, "has": True, "labels": labels,
+                               "descs": descs, "text": text}
+    payload.update(d)      # baseline / items / counts / notes / headline / focus_new
     return jsonify(payload)
 
 

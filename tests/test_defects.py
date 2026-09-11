@@ -117,9 +117,10 @@ def test_markdown_escapes_table_cells():
     reg = _reg([{"name": "登录|超时", "result": "FAIL", "detail": "第一行\n第二行"}])
     md = df.render_markdown(df.build_defects(reg=reg))
     row = [ln for ln in md.splitlines() if ln.startswith("| DEF-001")][0]
-    # 按**未转义**的竖线切分，应正好得到 6 个单元格
+    # 按**未转义**的竖线切分，应正好得到 7 个单元格
+    # （编号 / 建议级别 / 新旧 / 来源 / 标题 / 实际 / 期望）
     cells = [c for c in re.split(r"(?<!\\)\|", row) if c.strip()]
-    assert len(cells) == 6
+    assert len(cells) == 7
     assert "\\|" in row        # 原竖线已被转义
     assert "\n" not in row     # 换行已被压平
 
