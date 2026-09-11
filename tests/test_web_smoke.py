@@ -691,3 +691,38 @@ def test_index_has_quality_tab_and_badge():
     assert "d_quality" in html
     assert "renderQualityPanel" in html
     assert "结构分" in html
+
+
+def test_cases_endpoint_also_scores_quality(monkeypatch, tmp_path):
+    """Web 生成用例也要打分 —— 否则「用例质量」页显示的是上一次 run 的分数，
+    两处口径不一致，趋势还会在 Web 生成这里断档。"""
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "requirements.md").write_text("1. 用户可登录\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.post("/api/projects/demo/cases", json={})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True
+    assert d["quality"] and d["quality"]["total"] is not None
+    # 必须落盘，控制台/报告/看板都读同一份
+    assert (proj / "artifacts" / "quality.json").is_file()
+    assert (proj / "artifacts" / "quality_history.jsonl").is_file()
+    # run_meta 也要记上，且不能抹掉其它阶段写入的结论
+    meta = web_app.pm._read_run_meta(proj)
+    assert meta["quality"] == d["quality"]["total"]
+    assert meta["mode"] and meta["cases"] == d["cases"]
+
+
+def test_cases_endpoint_merge_run_meta_keeps_other_gates(monkeypatch, tmp_path):
+    """只生成用例（没跑回归）时，不能把上次的性能安全/Web 结论抹掉 ——
+    那会让报告变成"这些门禁从没跑过"，属于自造的信息丢失。"""
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "requirements.md").write_text("1. 用户可登录\n", encoding="utf-8")
+    art = proj / "artifacts"
+    art.mkdir()
+    web_app.pm._write_run_meta(proj, mode="旧模式", web={"executed": True, "all_pass": False})
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.post("/api/projects/demo/cases", json={}).get_json()["ok"] is True
+    meta = web_app.pm._read_run_meta(proj)
+    assert meta["web"]["all_pass"] is False      # 保留
+    assert meta["mode"] != "旧模式"               # 已更新为本次模式

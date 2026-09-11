@@ -106,7 +106,10 @@ export APP_PASSWORD="macro123"
     --input extensions/requirements_to_cases/sample_requirements.md
 ```
 
-#### 用例结构质量分（`case_quality.py`，每次 run 自动算）
+#### 用例结构质量分（`case_quality.py`，每次生成用例都自动算）
+
+> 三个入口同一个口径：CLI `run`、Web「立即生成用例」、轻量入口 `run_pipeline`（无项目目录，只打印不落盘）。
+> 生成用例却不算分，会让「用例质量」页停在旧分数、趋势在这里断档。
 对生成的用例做**结构性体检**：需求覆盖 / 三类齐备（功能·边界·异常）/ 可执行性 /
 具体性 / 去重，加权成 0-100 总分，落 `artifacts/quality.json` + `quality_history.jsonl`，
 在报告、看板、控制台「用例质量」页展示**总分与趋势**：

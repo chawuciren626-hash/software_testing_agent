@@ -371,6 +371,26 @@ def api_project_cases(pid: str) -> Any:
         return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
 
     _, case_rows = pm._parse_cases(md)
+
+    # 与 CLI `run` 同源：生成用例就打分。
+    # 不做的话，Web 生成完用例后「用例质量」页还是上一次 run 的分数 ——
+    # 两处口径不一致比没有口径更糟，而且趋势会在这里断档。
+    _mode = ("智能体多步自审编排" if (use_llm and use_agentic)
+             else ("LLM 增强" if use_llm else "规则版"))
+    quality: Optional[Dict[str, Any]] = None
+    try:
+        quality = pm._step_quality(pdir, md, requirement_count=len(items), mode=_mode)
+    except Exception as e:      # 打分失败不能让生成用例这个主操作失败
+        print(f"[质量分] 计算失败（不影响生成）：{e}")
+    try:
+        pm._merge_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
+                           lessons_injected=bool(extra_context),
+                           requirements=len(items), cases=len(case_rows),
+                           **({"quality": quality["total"]}
+                              if quality and quality.get("total") is not None else {}))
+    except Exception as e:
+        print(f"[run_meta] 写入失败（不影响生成）：{e}")
+
     return jsonify({
         "ok": True,
         "requirements": len(items),
@@ -380,6 +400,7 @@ def api_project_cases(pid: str) -> Any:
         "llm_available": _llm_available(),
         "agentic_used": use_agentic and _llm_available(),
         "lessons_injected": bool(extra_context),
+        "quality": quality,
     })
 
 

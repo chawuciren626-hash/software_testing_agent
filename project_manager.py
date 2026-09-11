@@ -579,6 +579,19 @@ def _write_run_meta(pdir: Path, **fields: Any) -> Dict[str, Any]:
     return meta
 
 
+def _merge_run_meta(pdir: Path, **fields: Any) -> Dict[str, Any]:
+    """在既有 run_meta 上**增量**更新，保留其它阶段写入的字段（perf_security / web / quality）。
+
+    为什么需要它：`_write_run_meta` 是整体覆盖。若「只生成用例、没跑回归」的场景
+    直接整体覆盖，会把上次全流程的性能安全 / Web 结论一起抹掉 ——
+    报告会变成"这些门禁从没跑过"，属于自造的信息丢失。
+    """
+    cur = _read_run_meta(pdir) or {}
+    cur.pop("ts", None)
+    cur.update(fields)
+    return _write_run_meta(pdir, **cur)
+
+
 def _read_run_meta(pdir: Path) -> Optional[Dict[str, Any]]:
     f = Path(pdir) / "artifacts" / RUN_META_FILE
     if not f.is_file():
@@ -1629,6 +1642,21 @@ def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] =
     _, rows = _parse_cases(md)
     _mode = "智能体多步编排" if (use_llm and agentic) else ("LLM 增强" if use_llm else "规则版")
     print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，{_mode}生成 {len(rows)} 条用例 → {cases_md}")
+
+    # 结构质量分：这个轻量入口没有项目目录（产物落在仓库根），无处落盘，
+    # 但"每次生成都算分"要成立 —— 至少把结论打到 stdout，不能一声不吭。
+    try:
+        import case_quality as _cq  # noqa: E402  (同目录，已在 sys.path 中)
+        _q = _cq.score_cases_md(md, requirement_count=len(items))
+        _total = _q.get("total")
+        if _total is None:
+            print("[1/3] 用例结构质量分：无法计分（用例为空或缺少可判定维度）")
+        else:
+            _notes = _q.get("notes") or []
+            _suffix = f"（{'; '.join(_notes)}）" if _notes else ""
+            print(f"[1/3] 用例结构质量分：{_total}/100{_suffix}")
+    except Exception as e:
+        print(f"[1/3] 用例结构质量分：计算失败（{e}）")
 
     # 2) 接口自动化（可选）
     if run_api:

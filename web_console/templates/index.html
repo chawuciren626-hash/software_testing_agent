@@ -2041,6 +2041,11 @@ async function generateCases(){
       err.textContent='生成失败：'+(d.error||'未知错误'); err.style.display='block'; return;
     }
     document.getElementById('d_cases').value=d.markdown||'';
+    // 生成即打分（与 CLI run 同源）：立刻刷新质量面板，
+    // 否则用户看到的还是上一次 run 的分数，趋势也会在这里断档。
+    fetch(`/api/projects/${encodeURIComponent(detailPid)}/quality`).then(r=>r.json())
+      .then(qd=>renderQualityPanel(qd,null)).catch(()=>{});
+    renderProjects();   // 项目卡上的结构分徽标同步刷新
     let tip='';
     if(d.agentic_used) tip='（已用智能体多步自审编排生成）';
     else if(d.llm_used) tip='（已用 LLM 智能生成）';

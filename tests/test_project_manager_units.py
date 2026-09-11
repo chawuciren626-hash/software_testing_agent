@@ -464,3 +464,24 @@ def test_run_parser_has_optional_quality_min():
     assert getattr(args, "quality_min", None) is None
     args2 = pm.build_parser().parse_args(["run", "demo", "--quality-min", "80"])
     assert args2.quality_min == 80
+
+
+def test_merge_run_meta_preserves_other_stage_results(tmp_path):
+    """增量更新：保留 perf_security / web 等其它阶段写入的字段。"""
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    pm._write_run_meta(pdir, mode="规则版",
+                       perf_security={"all_pass": True, "summary": "ok"},
+                       web={"executed": True, "all_pass": False})
+    pm._merge_run_meta(pdir, mode="LLM 增强", cases=9)
+    m = pm._read_run_meta(pdir)
+    assert m["mode"] == "LLM 增强" and m["cases"] == 9
+    assert m["perf_security"]["all_pass"] is True     # 没被抹掉
+    assert m["web"]["all_pass"] is False              # 没被抹掉
+
+
+def test_merge_run_meta_works_without_existing_file(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    pm._merge_run_meta(pdir, mode="规则版")
+    assert pm._read_run_meta(pdir)["mode"] == "规则版"
