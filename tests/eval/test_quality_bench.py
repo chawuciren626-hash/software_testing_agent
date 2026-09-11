@@ -44,6 +44,28 @@ def test_compare_modes_handles_disabled_judge(monkeypatch):
     assert "未启用" in qb.render_table(c)
 
 
+def test_compare_modes_repeat_averaging(monkeypatch):
+    monkeypatch.setattr(gc, "generate_from_text",
+                        lambda *a, **k: "| id | 标题 |\n|---|---|\n| REQ-001-F | a |")
+    scores = iter([80, 100])
+    monkeypatch.setattr(llm_judge, "score_cases", lambda md, **k: _scores(next(scores)))
+    c = qb.compare_modes("1. x", modes=["rule"], repeat=2)
+    assert c["repeat"] == 2
+    r = c["results"][0]
+    assert len(r["trials"]) == 2
+    assert r["total_mean"] == 90.0
+    assert r["total_min"] == 80 and r["total_max"] == 100
+
+
+def test_render_table_repeat_shows_mean_and_range(monkeypatch):
+    monkeypatch.setattr(gc, "generate_from_text",
+                        lambda *a, **k: "| id | 标题 |\n|---|---|\n| REQ-001-F | a |")
+    scores = iter([80, 100])
+    monkeypatch.setattr(llm_judge, "score_cases", lambda md, **k: _scores(next(scores)))
+    txt = qb.render_table(qb.compare_modes("1. x", modes=["rule"], repeat=2))
+    assert "均分" in txt and "90" in txt and "80~100" in txt
+
+
 def test_render_table_contains_labels(monkeypatch):
     monkeypatch.setattr(gc, "generate_from_text",
                         lambda *a, **k: "| id | 标题 |\n|---|---|\n| REQ-001-F | a |")
