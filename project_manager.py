@@ -286,7 +286,7 @@ def cmd_info(args: argparse.Namespace) -> None:
         print(f"  {k}: {v}")
 
 
-def _step_requirements(pid: str, pdir: Path) -> Optional[Path]:
+def _step_requirements(pid: str, pdir: Path, use_llm: bool = False) -> Optional[Path]:
     req_file = pdir / "requirements.md"
     out = pdir / "artifacts" / "cases.md"
     if not req_file.is_file():
@@ -295,10 +295,11 @@ def _step_requirements(pid: str, pdir: Path) -> Optional[Path]:
     sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
     import generate_cases as gc  # noqa: E402
 
-    items = gc.parse_requirements(req_file.read_text(encoding="utf-8"))
-    cases = gc.gen_cases(items)
-    out.write_text(gc.to_markdown(cases, str(req_file)), encoding="utf-8")
-    print(f"  [需求->用例] {len(items)} 条需求 -> {len(cases)} 条用例 -> {out}")
+    text = req_file.read_text(encoding="utf-8")
+    md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file))
+    out.write_text(md, encoding="utf-8")
+    _, rows = _parse_cases(md)
+    print(f"  [需求->用例] {'LLM 增强' if use_llm else '规则版'}：{len(rows)} 条用例 -> {out}")
     return out
 
 
@@ -674,7 +675,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"== 全流程测试：{args.id}（环境 {base_url}）==")
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "artifacts").mkdir(exist_ok=True)
-    cases = _step_requirements(args.id, pdir)
+    cases = _step_requirements(args.id, pdir, use_llm=getattr(args, "llm", False))
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
     _step_report(args.id, pdir, cases, reg)
@@ -780,21 +781,24 @@ tr.skip td:nth-child(6){{color:#b45309;font-weight:600;}}
     print(f"\n看板已生成：{out}")
 
 
-def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] = None) -> Path:
+def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] = None,
+                 use_llm: bool = False) -> Path:
     """统一流水线：需求 -> 用例 -> [接口自动化] -> 报告总览。
 
     供 CLI ``run`` 与轻量入口（software_testing_agent.py）共用，消除双入口漂移。
-    不依赖 LLM；有 LLM key 时需求→用例可经基座 ``make_llm`` 增强（见 generate_cases._llm_generate）。
+    不依赖 LLM；传入 use_llm=True 且配置 LLM_API_KEY（OpenAI 兼容，如 Qwen/DeepSeek，
+    provider 由 LLM_PROVIDER 决定）时需求→用例走 LLM 增强，失败自动降级规则版。
     """
     # 1) 需求 -> 用例
     sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
     import generate_cases as gc  # noqa: F401  (延迟导入，避免基座依赖常驻)
     text = Path(req_file).read_text(encoding="utf-8")
-    items = gc.parse_requirements(text)
-    cases = gc.gen_cases(items)
+    md = gc.generate_from_text(text, use_llm=use_llm, source=req_file)
     cases_md = ROOT / "extensions" / "requirements_to_cases" / "cases.md"
-    cases_md.write_text(gc.to_markdown(cases, req_file), encoding="utf-8")
-    print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，生成 {len(cases)} 条用例 → {cases_md}")
+    cases_md.write_text(md, encoding="utf-8")
+    items = gc.parse_requirements(text)
+    _, rows = _parse_cases(md)
+    print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，{'LLM 增强' if use_llm else '规则版'}生成 {len(rows)} 条用例 → {cases_md}")
 
     # 2) 接口自动化（可选）
     if run_api:
@@ -852,6 +856,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="全流程测试（需求->用例->接口->回归->报告）")
     r.add_argument("id")
+    r.add_argument("--llm", action="store_true",
+                   help="需求→用例采用 LLM 增强（需 LLM_API_KEY；失败自动降级规则版）")
     r.set_defaults(func=cmd_run)
 
     g = sub.add_parser("regression", help="仅核心业务回归")

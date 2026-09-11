@@ -214,6 +214,8 @@ def test_openai_generate_local_ollama_no_key(monkeypatch):
             captured["has_auth"] = "Authorization" in k.get("headers", {})
             return FakeResponse(200, OPENAI_GOOD_JSON)
     monkeypatch.setattr(gc, "requests", FakeReq())
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_BASE", raising=False)
     monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434/v1")
     out = gc.openai_compatible_generate("x")  # 无 key
     assert captured["url"].startswith("http://localhost:11434/v1/chat/completions")

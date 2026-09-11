@@ -52,6 +52,10 @@ import project_manager as pm  # noqa: E402  复用 load_projects / load_project
 import web_console.run_store as run_store  # noqa: E402  任务历史落盘 SQLite
 run_store.init_db(DATA_ROOT / "runs.db")
 
+# 启动即把根目录 .env 载入进程环境，使 Web 端的 LLM 配置（LLM_* 变量）对
+# extensions/requirements_to_cases 的 in-process 调用（需求→用例智能生成）即时可见。
+pm._load_dotenv()
+
 # frozen 模式下，把只读资源复制到可读写的 DATA_ROOT：
 #  - agent-skills：技能开关要写 .disabled 标记，必须可写
 #  - .env：密钥落本地（不随二进制发布真实凭据），首次运行写模板
@@ -618,40 +622,85 @@ def api_automation() -> Any:
 MODELS_FILE = DATA_ROOT / "models_config.json"
 
 
+def _update_env_file(path: Path, updates: Dict[str, str]) -> List[str]:
+    """把给定键值对写回 .env：保留注释与无关行；已存在则原地替换，不存在则追加。
+
+    值为空字符串的键会被跳过（不覆盖已有值）。返回实际写入的键列表。
+    """
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    seen: set[str] = set()
+    out: List[str] = []
+    for line in lines:
+        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*=", line)
+        if m and m.group(1) in updates and updates[m.group(1)]:
+            out.append(f'{m.group(1)}="{updates[m.group(1)]}"')
+            seen.add(m.group(1))
+        else:
+            out.append(line)
+    for k, v in updates.items():
+        if k not in seen and v:
+            out.append(f'{k}="{v}"')
+    path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+    return [k for k, v in updates.items() if k in seen or (k not in seen and v)]
+
+
 @app.get("/api/models")
 def api_models_get() -> Any:
-    cfg: Dict[str, Any] = {}
-    if MODELS_FILE.is_file():
-        try:
-            cfg = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            cfg = {}
+    """返回当前 LLM 配置（以 .env 中的 LLM_* 为唯一来源），并掩码展示 key。"""
     provider = os.environ.get("LLM_PROVIDER", "openai")
+    model = os.environ.get("LLM_MODEL", "")
+    base_url = os.environ.get("LLM_BASE_URL", "")
+    api_key = os.environ.get("LLM_API_KEY", "")
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import generate_cases as gc  # noqa: E402
+        configured = gc.llm_configured()
+    except Exception:
+        configured = bool(api_key) or any(h in base_url for h in ("localhost", "127.0.0.1"))
     return jsonify({
-        "config": cfg,
         "provider": provider,
-        "model": os.environ.get("LLM_MODEL", "") or cfg.get("model", ""),
-        "base_url": os.environ.get("LLM_BASE_URL", "") or cfg.get("base_url", ""),
+        "model": model,
+        "base_url": base_url,
+        "api_key_masked": ("***" + api_key[-4:]) if api_key else "",
+        "has_api_key": bool(api_key),
         "keys": {
-            "llm_configured": gc.llm_configured(),
-            "openai": bool(os.environ.get("LLM_API_KEY")),
+            "openai": bool(api_key),
             "gemini": bool(os.environ.get("GOOGLE_API_KEY")),
             "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "llm_configured": configured,
         },
     })
 
 
 @app.post("/api/models")
 def api_models_save() -> Any:
+    """在线保存 LLM 配置，写回根目录 .env（LLM_PROVIDER/LLM_MODEL/LLM_BASE_URL/LLM_API_KEY）。
+
+    不入库、不写孤立 JSON；key 留空表示不修改已有密钥。
+    """
     data = request.get_json(silent=True) or {}
-    cfg = {
-        "provider": str(data.get("provider", "openai")),
-        "model": str(data.get("model", "")).strip(),
-        "base_url": str(data.get("base_url", "")).strip(),
+    field_map = {
+        "provider": "LLM_PROVIDER",
+        "model": "LLM_MODEL",
+        "base_url": "LLM_BASE_URL",
+        "api_key": "LLM_API_KEY",
     }
-    MODELS_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
-    return jsonify({"ok": True, "config": cfg})
+    updates = {}
+    for field, env_key in field_map.items():
+        val = data.get(field)
+        if isinstance(val, str) and val.strip():
+            updates[env_key] = val.strip()
+    if not updates:
+        return jsonify({"ok": False, "error": "没有可保存的字段"})
+    env_path = ROOT / ".env"
+    try:
+        _update_env_file(env_path, updates)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"写入 .env 失败：{e}"})
+    # 同步到当前进程环境，使后续调用立即生效
+    for k, v in updates.items():
+        os.environ[k] = v
+    return jsonify({"ok": True, "updated": list(updates.keys())})
 
 
 # ----------------------------------------------------------------------------
