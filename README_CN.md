@@ -106,6 +106,23 @@ export APP_PASSWORD="macro123"
     --input extensions/requirements_to_cases/sample_requirements.md
 ```
 
+#### 用例结构质量分（`case_quality.py`，每次 run 自动算）
+对生成的用例做**结构性体检**：需求覆盖 / 三类齐备（功能·边界·异常）/ 可执行性 /
+具体性 / 去重，加权成 0-100 总分，落 `artifacts/quality.json` + `quality_history.jsonl`，
+在报告、看板、控制台「用例质量」页展示**总分与趋势**：
+
+```bash
+.venv/Scripts/python extensions/requirements_to_cases/case_quality.py \
+    projects/<id>/artifacts/cases.md --requirements 5
+```
+
+| 约定 | 说明 |
+|---|---|
+| **结构分 ≠ 质量判定** | 它只看形式完整性；"写错的边界值"照样能拿高分。语义质量用 `tests/eval/llm_judge.py` 抽样评 |
+| **默认不做硬门禁** | 结构分可以注水刷高，拿它卡 CI 等于鼓励刷分。正确用法是**看趋势**——分数突然下跌说明生成环节退化 |
+| **算不出就不猜** | 需求条数未知时覆盖率记「未计分」并写明原因，总分按剩余维度重新归一化，而不是填 0 或 100 |
+| **满分要声明饱和** | 全维度满分时明确提示"只能说明形式完整"，避免被误读成"用例没问题" |
+
 ### 5.4 上层智能体（需 LLM key）
 在 `.env` 填入 `ANTHROPIC_API_KEY` 或 `GOOGLE_API_KEY`，然后：
 ```bash

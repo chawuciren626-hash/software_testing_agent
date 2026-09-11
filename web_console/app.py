@@ -233,6 +233,7 @@ def api_projects() -> Any:
             "reg": _read_regression(pdir),
             "perf_security": _read_perf_security(pdir),
             "web": _read_web(pdir),
+            "quality": pm._read_quality(pdir),
             "disabled": pm.is_disabled(pdir),
         })
     return jsonify({"projects": items})
@@ -266,7 +267,8 @@ def api_project_files(pid: str) -> Any:
         except Exception:
             perf_sec = None
     return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir),
-                    "perf_security": perf_sec, "web": _read_web(pdir)})
+                    "perf_security": perf_sec, "web": _read_web(pdir),
+                    "quality": pm._read_quality(pdir)})
 
 
 def _llm_available() -> bool:
@@ -297,6 +299,32 @@ def api_project_lessons(pid: str) -> Any:
     lp = pdir / "lessons.md"
     content = lp.read_text(encoding="utf-8") if lp.is_file() else ""
     return jsonify({"ok": True, "has": bool(content), "content": content})
+
+
+@app.get("/api/projects/<pid>/quality")
+def api_project_quality(pid: str) -> Any:
+    """用例结构质量分（与 CLI / 报告同源，读 `artifacts/quality.json`）。
+
+    额外回传 `text`（纯文本摘要）与 `labels` / `hints`（维度中文名），
+    前端就不必自己维护一份维度文案 —— 两处各写一份迟早会漂移。
+    """
+    pdir = pm.PROJECTS_DIR / pid
+    if not (pdir / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    q = pm._read_quality(pdir)
+    if not q:
+        return jsonify({"ok": True, "has": False, "total": None, "history": []})
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import case_quality as cq  # noqa: E402
+        labels, hints, dims_meta, text = cq.LABELS, cq.HINTS, cq.DIMENSIONS, cq.render_text(q)
+    except Exception:      # 元信息拿不到也要能展示分数，别让整个面板挂掉
+        labels, hints, dims_meta, text = {}, {}, [], ""
+    payload: Dict[str, Any] = {"ok": True, "has": True, "text": text,
+                               "labels": labels, "hints": hints,
+                               "dims_order": list(dims_meta)}
+    payload.update(q)      # total / dims / delta / history / notes / counts / scored_at
+    return jsonify(payload)
 
 
 @app.post("/api/projects/<pid>/cases")

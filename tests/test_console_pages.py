@@ -132,3 +132,44 @@ def test_nav_entries_match_registered_pages(console_url, browser_session):
             assert page.locator(f"#page-{name}").count() == 1, f"缺少页面容器 #page-{name}"
     finally:
         page.close()
+
+
+@needs_browser
+def test_quality_tab_renders_without_js_errors(console_url, browser_session):
+    """详情弹窗的「用例质量」页必须真的渲染出内容，且没有 JS 报错。
+
+    只断言"HTML 里有 renderQualityPanel 这个函数名"是不够的 ——
+    函数体里一个 undefined 变量照样会让面板空白，而字符串检查照样通过。
+    """
+    page = browser_session.new_page(viewport={"width": 1500, "height": 1000})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    page.on("console", lambda m: errors.append(f"console.error: {m.text}")
+            if m.type == "error" else None)
+    try:
+        page.goto(console_url, wait_until="networkidle")
+        page.evaluate("switchTab('quality')")
+        page.wait_for_timeout(300)
+        # 有数据：分数、维度条、免责说明都要出现
+        page.evaluate("""() => renderQualityPanel({
+            has: true, total: 95, delta: -3,
+            dims: {coverage: 100, types: 100, executable: 100, specificity: 47, dedup: 100},
+            dims_order: ['coverage','types','executable','specificity','dedup'],
+            labels: {coverage:'需求覆盖', types:'三类齐备', executable:'可执行性',
+                     specificity:'具体性', dedup:'去重'},
+            hints: {coverage:'被覆盖到的需求占比'},
+            counts: {cases: 15, requirements: 5, covered: 5, dup: 0},
+            history: [{total: 98}, {total: 95}], notes: ['提示一条'],
+            scored_at: '2026-09-11 18:00', text: '总分：95'}, null)""")
+        box = page.locator("#d_quality")
+        html = box.inner_html()
+        assert "95" in html, "总分没渲染出来"
+        assert "q-bar-fill" in html, "维度条没渲染出来"
+        assert "不代表用例质量好坏" in html, "缺少「结构分≠质量」的免责说明"
+        assert "↓3" in html, "环比下跌没显示"
+        # 无数据：要给引导文案，而不是空白
+        page.evaluate("() => renderQualityPanel(null, null)")
+        assert "尚未计算" in page.locator("#d_quality").inner_html()
+        assert not errors, "质量页面有 JS 报错：" + " | ".join(errors[:3])
+    finally:
+        page.close()

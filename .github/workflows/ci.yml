@@ -62,6 +62,7 @@ jobs:
             tests/test_gemini_cases.py \
             tests/test_gate_notify.py \
             tests/test_console_auth.py \
+            tests/test_case_quality.py \
             tests/eval \
             -q
 

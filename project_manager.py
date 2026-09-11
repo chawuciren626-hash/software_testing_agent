@@ -442,6 +442,8 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
 RUN_META_FILE = "run_meta.json"
 PERF_SEC_FILE = "perf_security.json"
 WEB_FILE = "web.json"
+QUALITY_FILE = "quality.json"
+QUALITY_HISTORY_FILE = "quality_history.jsonl"
 
 
 def _step_perf_security(pdir: Path, users: Optional[int] = None,
@@ -499,6 +501,49 @@ def _step_web(pdir: Path, only: Optional[str] = None, headed: bool = False,
 
 def _read_web(pdir: Path) -> Optional[Dict[str, Any]]:
     f = Path(pdir) / "artifacts" / WEB_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _step_quality(pdir: Path, cases_md: Optional[str],
+                  requirement_count: Optional[int] = None,
+                  mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """L3 评测常态化：每次 run 都算一次**用例结构质量分**（确定性、零依赖）。
+
+    落盘两处：`artifacts/quality.json`（本次结果+历史）与
+    `artifacts/quality_history.jsonl`（趋势数据源，只存结论数字）。
+
+    为什么值得每次都算：LLM judge 需要 key、有成本、单次判分还有方差，注定只能抽样；
+    而"这次的用例比上次明显差"这种信号，只有在每次都算的情况下才拿得到。
+    ⚠️ 这是**结构分**（形式完整性），不是语义质量判定，默认不做硬门禁。
+    """
+    if not cases_md or not cases_md.strip():
+        return None
+    sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+    import case_quality as cq  # noqa: E402
+
+    result = cq.score_cases_md(cases_md, requirement_count=requirement_count)
+    cq.record_quality(pdir, result, mode=mode)   # 一步到位：追加历史 + 写 quality.json
+
+    total = result.get("total")
+    d = cq.delta(cq.read_history(pdir))
+    if total is None:
+        print("  [质量分] 无法计分（用例为空或缺少可判定维度），已跳过")
+        return result
+    # 注意区分 `d is None`（数据不足，首次）与 `d == 0`（持平）——
+    # 用 `if not d` 会把"持平"显示成"—"，让人以为还没跑过。
+    arrow = "首次" if d is None else ("持平" if d == 0 else (f"↑{d}" if d > 0 else f"↓{abs(d)}"))
+    print(f"  [质量分] 结构质量 {total}/100（环比 {arrow}） -> artifacts/{QUALITY_FILE}")
+    return result
+
+
+def _read_quality(pdir: Path) -> Optional[Dict[str, Any]]:
+    f = Path(pdir) / "artifacts" / QUALITY_FILE
     if not f.is_file():
         return None
     try:
@@ -880,6 +925,76 @@ def _web_card_html(wf: Dict[str, Any]) -> str:
     )
 
 
+def _quality_card_html(q: Dict[str, Any]) -> str:
+    """用例结构质量分卡片：总分 + 维度条 + 环比 + 趋势 sparkline + 未计分说明。
+
+    卡片里必须显式写清"结构分 ≠ 用例质量"：
+    一个满分的结构分只说明形式完整，读的人很容易把它当质量结论用。
+    """
+    total = q.get("total")
+    dims = q.get("dims") or {}
+    delta = q.get("delta")
+    hist = q.get("history") or []
+    counts = q.get("counts") or {}
+
+    def _color(v: int) -> str:
+        return "var(--ok)" if v >= 80 else ("var(--warn)" if v >= 60 else "var(--bad)")
+
+    def _bar(v: int) -> str:
+        return (f"<div class='q-bar'><div class='q-bar-fill' style='width:"
+                f"{max(0, min(100, int(v)))}%;background:{_color(v)}'></div></div>")
+
+    if delta is None:
+        d_html, d_color = "首次", "var(--muted)"
+    elif delta == 0:
+        d_html, d_color = "持平", "var(--muted)"
+    elif delta > 0:
+        d_html, d_color = f"↑{delta}", "var(--ok)"
+    else:
+        d_html, d_color = f"↓{abs(delta)}", "var(--bad)"
+
+    total_html = (f"<span style='color:{_color(int(total))}'>{total}</span>"
+                  if isinstance(total, int) else "<span style='color:var(--muted)'>—</span>")
+
+    sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+    import case_quality as cq  # noqa: E402
+    dim_rows = "".join(
+        f"<div class='q-row'><span class='q-k'>{_h(cq.LABELS[d])}</span>"
+        f"{_bar(int(v))}<span class='q-v' style='color:{_color(int(v))}'>{v}</span>"
+        f"<span class='q-hint'>{_h(cq.HINTS[d])}</span></div>"
+        for d, v in ((d, dims.get(d)) for d in cq.DIMENSIONS) if v is not None
+    )
+    spark = cq.sparkline(cq.trend_series(hist))
+    spark_html = (f"<div class='q-trend'><span class='q-k'>趋势</span>{spark}</div>"
+                  if spark else "")
+
+    notes = "".join(f"<li>{_h(n)}</li>" for n in (q.get("notes") or []))
+    notes_html = f"<ul class='q-notes'>{notes}</ul>" if notes else ""
+
+    meta = " · ".join(filter(None, [
+        f"用例 {counts.get('cases', 0)} 条",
+        (f"需求 {counts.get('requirements')} 条（覆盖 {counts.get('covered', 0)}）"
+         if counts.get("requirements") else ""),
+        (f"重复 {counts.get('dup')} 条" if counts.get("dup") else ""),
+        f"历史 {len(hist)} 次",
+    ]))
+
+    return f"""<div class='card'>
+  <div class='card-title'>用例结构质量分 <span class='count'>{_h(q.get('scored_at', ''))}</span></div>
+  <div class='q-head'>
+    <div class='q-total'>{total_html}<span class='q-total-max'>/100</span></div>
+    <div class='q-delta' style='color:{d_color}'>环比 {d_html}</div>
+    <div class='q-meta'>{_h(meta)}</div>
+  </div>
+  <div class='q-dims'>{dim_rows}</div>
+  {spark_html}
+  <div class='q-disclaimer'>结构分只反映<strong>形式完整性</strong>（覆盖/三类/可执行/具体/去重），
+    <strong>不代表用例质量好坏</strong>——语义正确性请用 LLM judge 抽样评测。
+    满分只说明没查出形式缺陷；趋势下跌才说明生成环节可能退化。</div>
+  {notes_html}
+</div>"""
+
+
 def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, Any]) -> Path:
     out = pdir / "artifacts" / "report.html"
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -976,6 +1091,18 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
                     f"{'通过' if _w_ok else '未通过'}</span></div>")
         web_card_html = _web_card_html(_wf)
 
+    # 用例结构质量分（执行过需求→用例才有；只做展示与趋势，不做硬门禁）
+    _q = _read_quality(pdir)
+    quality_item = ""
+    quality_card_html = ""
+    if _q and _q.get("total") is not None:
+        _qt = int(_q["total"])
+        _qc = ("var(--ok)" if _qt >= 80 else ("var(--warn)" if _qt >= 60 else "var(--bad)"))
+        quality_item = ("<div class='summary-item'><span class='k'>用例结构分</span>"
+                        f"<span class='v' style='font-size:15px;font-weight:800;color:{_qc}'>"
+                        f"{_qt}</span></div>")
+        quality_card_html = _quality_card_html(_q)
+
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>测试报告 - {pid}</title>
@@ -1069,6 +1196,22 @@ header .subtitle{{font-size:14px;color:var(--muted);}}
 .case-row .k{{font-size:11px;color:var(--muted);font-weight:700;padding-top:1px;}}
 .case-row .v{{font-size:12.5px;color:var(--text);line-height:1.6;}}
 .empty-case{{color:var(--muted);font-size:14px;padding:20px 0;text-align:center;}}
+.q-head{{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:16px;}}
+.q-total{{font-size:34px;font-weight:800;line-height:1;color:var(--ink);}}
+.q-total-max{{font-size:13px;color:var(--muted-2);font-weight:600;margin-left:2px;}}
+.q-delta{{font-size:13px;font-weight:700;}}
+.q-meta{{font-size:12px;color:var(--muted);margin-left:auto;}}
+.q-dims{{display:flex;flex-direction:column;gap:8px;}}
+.q-row{{display:grid;grid-template-columns:64px 1fr 36px;gap:10px;align-items:center;font-size:12.5px;}}
+.q-k{{font-size:12px;color:var(--muted);font-weight:700;}}
+.q-bar{{height:8px;background:var(--surface);border:1px solid var(--border-2);border-radius:999px;overflow:hidden;}}
+.q-bar-fill{{height:100%;border-radius:999px;}}
+.q-v{{font-size:12.5px;font-weight:800;text-align:right;font-family:var(--mono);}}
+.q-hint{{grid-column:2 / span 2;font-size:11px;color:var(--muted-2);margin-top:-4px;}}
+.q-trend{{margin-top:16px;display:flex;align-items:center;gap:10px;}}
+.q-disclaimer{{margin-top:14px;font-size:11.5px;color:var(--muted);background:var(--surface);
+  border:1px solid var(--border-2);border-radius:var(--radius-sm);padding:9px 12px;line-height:1.65;}}
+.q-notes{{margin:10px 0 0;padding-left:20px;font-size:12px;color:var(--muted);line-height:1.7;}}
 footer{{margin-top:24px;padding-top:18px;border-top:1px solid var(--border);font-size:12px;color:var(--muted-2);display:flex;justify-content:space-between;align-items:center;}}
 footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;border-radius:4px;}}
 @media (max-width:720px){{
@@ -1092,6 +1235,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   {gen_item}
   {ps_item}
   {web_item}
+  {quality_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
 
@@ -1103,6 +1247,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 {ps_card_html}
 
 {web_card_html}
+
+{quality_card_html}
 
 <div class='card'>
   <div class='card-title'>由需求生成的用例（预览） <span class='count'>{cases_count}</span></div>
@@ -1183,6 +1329,18 @@ def cmd_run(args: argparse.Namespace) -> None:
     _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
                         lessons_injected=bool(inject),
                         requirements=_req_count, cases=_case_count)
+
+    # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），
+    # 落盘后供报告/看板/控制台读；分数不参与门禁，只看趋势。
+    if cases and Path(cases).is_file():
+        try:
+            _q = _step_quality(pdir, Path(cases).read_text(encoding="utf-8"),
+                               requirement_count=_req_count or None, mode=_mode)
+            if _q and _q.get("total") is not None:
+                _meta_fields["quality"] = _q["total"]
+                _write_run_meta(pdir, **_meta_fields)
+        except Exception as e:  # 打分失败绝不能拖垮主流程
+            print(f"  [质量分] 计算失败（不影响流程）：{e}", file=sys.stderr)
 
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
@@ -1308,6 +1466,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             "reg": reg,
             "ps": _read_perf_security(pdir),   # ④ 性能与安全冒烟（可能未执行）
             "web": _read_web(pdir),            # ⑤ Web UI 冒烟（可能未执行）
+            "quality": _read_quality(pdir),    # 用例结构质量分（可能未执行）
         })
 
     print(f"== 跨项目总览（{len(rows)} 个项目）==")
@@ -1332,6 +1491,12 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
         if wf:
             wg = "✅ 通过" if wf.get("all_pass") else "❌ 未通过"
             print(f"  {'':<16}{'':<22}Web UI：{wg} · {wf.get('summary', '')}")
+        q = r.get("quality")
+        if q and q.get("total") is not None:
+            d = q.get("delta")
+            arrow = "首次" if d is None else ("持平" if d == 0 else (f"↑{d}" if d > 0 else f"↓{abs(d)}"))
+            print(f"  {'':<16}{'':<22}用例结构分：{q['total']}/100（环比 {arrow}）"
+                  f" · {len(q.get('history') or [])} 次历史")
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     trs = []
@@ -1368,6 +1533,24 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
                           + (f" · 抖动 {wf.get('flaky')}" if wf.get("flaky") else "")
                           + (f" · 配置问题 {len(wf.get('config_issues') or [])}"
                              if wf.get("config_issues") else ""))
+        # 用例结构质量分：只展示与看趋势，**不是门禁**（结构分可被注水刷高）
+        q = r.get("quality")
+        if not q or q.get("total") is None:
+            q_detail, q_badge = "<span class='muted'>未执行</span>", "<span class='muted'>—</span>"
+        else:
+            _qt = int(q["total"])
+            _qc = ("var(--ok,#047857)" if _qt >= 80
+                   else ("var(--warn,#b45309)" if _qt >= 60 else "var(--bad,#b91c1c)"))
+            q_detail = (f"<b style='color:{_qc}'>{_qt}</b>/100"
+                        + f" · 历史 {len(q.get('history') or [])} 次")
+            d = q.get("delta")
+            if d is None:
+                q_badge = "<span class='muted'>首次</span>"
+            elif d == 0:
+                q_badge = "<span class='muted'>持平</span>"
+            else:
+                q_badge = (f"<span style='color:#047857'>↑{d}</span>" if d > 0
+                           else f"<span style='color:#b91c1c'>↓{abs(d)}</span>")
         trs.append(
             f"<tr class='{cls}'><td><b>{_h(r['pid'])}</b></td>"
             f"<td>{_h(r['name'])}</td><td>{_h(r['owner'])}</td>"
@@ -1375,6 +1558,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             f"<td>{detail}</td><td class='gate-cell'>{badge}</td>"
             f"<td>{ps_detail}</td><td class='gate-cell'>{ps_badge}</td>"
             f"<td>{web_detail}</td><td class='gate-cell'>{web_badge}</td>"
+            f"<td>{q_detail}</td><td class='gate-cell'>{q_badge}</td>"
             f"<td><a href='projects/{_h(r['pid'])}/artifacts/report.html'>项目报告</a></td></tr>"
         )
 
@@ -1392,8 +1576,9 @@ td.gate-cell{{font-weight:700;white-space:nowrap;}}
 .muted{{color:#9ca3af;}}</style>
 </head><body>
 <h1>跨项目测试总览</h1>
-<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟 / Web UI 冒烟</div>
-<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>Web UI</th><th>门禁</th><th>明细</th></tr>
+<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟 / Web UI 冒烟 / 用例结构质量分</div>
+<div class='meta'>「用例结构分」只反映形式完整性（覆盖/三类/可执行/具体/去重），<b>不是质量判定、也不做门禁</b>；看它的<b>趋势</b>——分数突然下跌说明生成环节可能退化。</div>
+<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>Web UI</th><th>门禁</th><th>用例结构分</th><th>环比</th><th>明细</th></tr>
 {''.join(trs)}
 </table>
 <div class='meta'>重新生成：python project_manager.py dashboard · 性能与安全冒烟：python project_manager.py perf-security &lt;项目ID&gt; · Web UI 冒烟：python project_manager.py web &lt;项目ID&gt;</div>

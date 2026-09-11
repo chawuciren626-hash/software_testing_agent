@@ -392,3 +392,67 @@ def test_run_pipeline_no_api_smoke(tmp_path):
                 cwd=_P(__file__).resolve().parent.parent,
                 stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
 
+
+# ---------- 用例结构质量分（L3 评测常态化） ----------
+
+_CASES_MD = """| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |
+|---|---|---|---|---|---|---|---|---|
+| REQ-001-F | 登录（功能） | 认证 | 功能 | P1 | 已部署 | 1. 输入 admin 与密码 macro123 2. 点击登录 | 返回 200，data.token 非空 | 是 |
+| REQ-001-B | 登录（边界） | 认证 | 边界 | P2 | 无 | 1. 输入长度为 6 个字符的密码 2. 提交 | 提示「密码至少 8 位」 | 是 |
+| REQ-001-N | 登录（异常） | 认证 | 异常 | P1 | 无 | 1. 输入错误密码 2. 点击登录 | 返回 500 且提示「用户名或密码错误」 | 是 |
+"""
+
+
+def test_step_quality_writes_files_and_history(tmp_path):
+    pdir = tmp_path / "p"
+    (pdir := pdir).mkdir()
+    pm._step_quality(pdir, _CASES_MD, requirement_count=1, mode="规则版")
+    assert (pdir / "artifacts" / "quality.json").is_file()
+    assert (pdir / "artifacts" / "quality_history.jsonl").is_file()
+    q = pm._read_quality(pdir)
+    assert q["total"] is not None and q["counts"]["cases"] == 3
+
+
+def test_step_quality_second_run_has_delta(tmp_path):
+    """第二次跑要能算环比 —— 用例被砍掉一半时分数必须下跌（趋势信号可用）。"""
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    pm._step_quality(pdir, _CASES_MD, requirement_count=1)
+    first = pm._read_quality(pdir)["total"]
+    assert first == 100
+    # 表头(1) + 分隔行(2) + 只留第一条用例(3)：覆盖率不变，但三类齐备从 100 掉到 33
+    one_case = "\n".join(_CASES_MD.splitlines()[:4])
+    pm._step_quality(pdir, one_case, requirement_count=1)
+    q = pm._read_quality(pdir)
+    assert q["total"] < first and q["delta"] == q["total"] - first
+    assert len(q["history"]) == 2
+
+
+def test_step_quality_no_cases_returns_none(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    assert pm._step_quality(pdir, "", requirement_count=1) is None
+    assert pm._step_quality(pdir, None, requirement_count=1) is None
+
+
+def test_quality_card_discloses_it_is_not_quality(tmp_path):
+    """卡片必须写明"结构分 ≠ 用例质量"，否则满分会被误读成质量结论。"""
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    pm._step_quality(pdir, _CASES_MD, requirement_count=1)
+    card = pm._quality_card_html(pm._read_quality(pdir))
+    assert "形式完整性" in card and "不代表用例质量好坏" in card
+    assert "q-bar-fill" in card          # 维度条渲染出来了
+    assert "环比" in card
+
+
+def test_report_includes_quality_card(tmp_path, monkeypatch):
+    """报告里要出现质量卡片与摘要项（跑过才有）。"""
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    (pdir / "project.yaml").write_text("project_id: demo\n", encoding="utf-8")
+    pm._step_quality(pdir, _CASES_MD, requirement_count=1)
+    out = pm._step_report("demo", pdir, None, {"results": [], "total": 0,
+                                              "passed": 0, "failed": 0, "skipped": 0})
+    html = out.read_text(encoding="utf-8")
+    assert "用例结构质量分" in html and "用例结构分" in html

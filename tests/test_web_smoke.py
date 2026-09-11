@@ -626,8 +626,68 @@ def test_gates_api_skips_disabled_projects(monkeypatch, tmp_path):
     assert inc["disabled"] == []
 
 
-def test_index_has_disabled_note_hook():
-    """前端要能显示"跳过了哪些停用项目"，否则用户会以为全都算过了。"""
+# ---------- 用例结构质量分（L3 评测常态化） ----------
+
+def test_quality_api_without_data(monkeypatch, tmp_path):
+    """没跑过 → has=False，而不是编一个 0 分（0 分会被读成"质量极差"）。"""
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/quality").get_json()
+    assert d["ok"] is True and d["has"] is False
+    assert d["total"] is None and d["history"] == []
+
+
+def test_quality_api_with_data(monkeypatch, tmp_path):
+    """有数据时回传维度中文名与顺序 —— 前端不再自己维护一份文案（两处迟早漂移）。"""
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "quality.json").write_text(
+        '{"total": 95, "dims": {"coverage": 100, "types": 100, "executable": 100,'
+        ' "specificity": 47, "dedup": 100}, "delta": -3, "history": [{"total": 98}],'
+        ' "notes": ["提示一条"], "counts": {"cases": 15}, "scored_at": "2026-09-11 18:00"}',
+        encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/quality").get_json()
+    assert d["ok"] is True and d["has"] is True and d["total"] == 95
+    assert d["delta"] == -3 and len(d["history"]) == 1
+    assert d["labels"]["coverage"] == "需求覆盖"
+    assert d["dims_order"][0] == "coverage"
+    assert "总分" in (d["text"] or "")
+
+
+def test_quality_api_unknown_project(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.get("/api/projects/nope/quality").status_code == 404
+
+
+def test_projects_api_exposes_quality(monkeypatch, tmp_path):
+    """项目列表要带质量分（卡片徽标用）；没跑过的项目是 None，不是缺字段。"""
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "quality.json").write_text('{"total": 88, "history": []}', encoding="utf-8")
+    _mk_tmp_project(tmp_path, "empty")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = {p["pid"]: p for p in client.get("/api/projects").get_json()["projects"]}
+    assert items["demo"]["quality"]["total"] == 88
+    assert items["empty"]["quality"] is None
+
+
+def test_files_api_exposes_quality(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "quality.json").write_text('{"total": 70, "history": []}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["quality"]["total"] == 70
+
+
+def test_index_has_quality_tab_and_badge():
+    """前端钩子：详情弹窗要有「用例质量」标签，项目卡要有结构分徽标。"""
     html = client.get("/").get_data(as_text=True)
-    assert "gateDisabledNote" in html
-    assert "d.disabled" in html
+    assert 'data-tab="quality"' in html
+    assert "d_quality" in html
+    assert "renderQualityPanel" in html
+    assert "结构分" in html
