@@ -571,3 +571,63 @@ def test_index_has_gates_ui_hooks():
     for token in ('data-page="gates"', 'id="page-gates"', "renderGates", "gateSummary",
                   "gateList", "gateText", "GATE_MARK", "copyGateText"):
         assert token in html, f"前端缺少 {token}"
+
+
+def test_gates_api_skips_disabled_projects(monkeypatch, tmp_path):
+    """与项目页/看板口径一致：停用项目不该继续把门禁拖红（否则是看不到的"幽灵红"）。"""
+    keep = _mk_tmp_project(tmp_path, "active")
+    (keep / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _write_gate(keep, "regression.json", True)
+
+    retired = _mk_tmp_project(tmp_path, "retired")
+    (retired / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _write_gate(retired, "regression.json", False, "早就没维护了")
+    (retired / ".disabled").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    assert [r["pid"] for r in d["rows"]] == ["active"]
+    assert d["disabled"] == ["retired"]
+    assert "已停用" in d["text"]          # 跳过要如实交代，不能静默隐藏
+    assert d["summary"]["disabled"] == 1
+
+    inc = client.get("/api/gates?include_disabled=1").get_json()
+    assert sorted(r["pid"] for r in inc["rows"]) == ["active", "retired"]
+    assert inc["disabled"] == []
+
+
+def test_index_has_disabled_note_hook():
+    """前端要能显示"跳过了哪些停用项目"，否则用户会以为全都算过了。"""
+    html = client.get("/").get_data(as_text=True)
+    assert "gateDisabledNote" in html
+    assert "d.disabled" in html
+
+
+def test_gates_api_skips_disabled_projects(monkeypatch, tmp_path):
+    """与项目页/看板口径一致：停用项目不该继续把门禁拖红（否则是看不到的"幽灵红"）。"""
+    keep = _mk_tmp_project(tmp_path, "active")
+    (keep / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _write_gate(keep, "regression.json", True)
+
+    retired = _mk_tmp_project(tmp_path, "retired")
+    (retired / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _write_gate(retired, "regression.json", False, "早就没维护了")
+    (retired / ".disabled").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    assert [r["pid"] for r in d["rows"]] == ["active"]
+    assert d["disabled"] == ["retired"]
+    assert "已停用" in d["text"]          # 跳过要如实交代，不能静默隐藏
+    assert d["summary"]["disabled"] == 1
+
+    inc = client.get("/api/gates?include_disabled=1").get_json()
+    assert sorted(r["pid"] for r in inc["rows"]) == ["active", "retired"]
+    assert inc["disabled"] == []
+
+
+def test_index_has_disabled_note_hook():
+    """前端要能显示"跳过了哪些停用项目"，否则用户会以为全都算过了。"""
+    html = client.get("/").get_data(as_text=True)
+    assert "gateDisabledNote" in html
+    assert "d.disabled" in html

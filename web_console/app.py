@@ -602,18 +602,24 @@ def api_gates() -> Any:
 
     与 CLI 的 `gate_notify.py` 同源同口径 —— 避免"控制台说绿、CLI 说红"两套结论。
     `?project=<pid>` 可只看指定项目（CI 用法：只看本次参与门禁的那个）。
+    `?include_disabled=1` 与 `/api/projects` 同款；默认跳过已停用项目，
+    否则停用项目会带着历史失败产物把门禁拖红，而项目页又看不到它 → 无法解释的幽灵红。
     """
     try:
         import gate_notify  # noqa: E402  延迟导入：仅在需要时解析
     except Exception as e:  # 依赖缺失不该让整个控制台挂掉
         return jsonify({"ok": False, "error": f"门禁摘要模块不可用：{e}"}), 500
     only = request.args.get("project")
-    rows = gate_notify.collect_gates(pm.PROJECTS_DIR, only=[only] if only else None)
+    include_disabled = request.args.get("include_disabled") in ("1", "true", "yes")
+    rows = gate_notify.collect_gates(pm.PROJECTS_DIR, only=[only] if only else None,
+                                     include_disabled=include_disabled)
+    disabled = [] if include_disabled else gate_notify.disabled_projects(pm.PROJECTS_DIR)
     return jsonify({
         "ok": True,
         "rows": rows,
-        "summary": gate_notify.summarize(rows),
-        "text": gate_notify.render_text(rows),
+        "disabled": disabled,
+        "summary": gate_notify.summarize(rows, disabled=len(disabled)),
+        "text": gate_notify.render_text(rows, disabled=disabled),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 

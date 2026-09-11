@@ -295,3 +295,115 @@ def test_main_text_file_sends_content(tmp_path, monkeypatch):
 
 def test_main_text_file_missing_returns_one(tmp_path):
     assert gn.main(["--text-file", str(tmp_path / "nope.txt")]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 停用项目（.disabled）—— 必须与看板/控制台口径一致，否则是"幽灵红"
+# --------------------------------------------------------------------------- #
+def _disable(pdir: Path) -> None:
+    (pdir / ".disabled").write_text("", encoding="utf-8")
+
+
+def test_disabled_project_excluded_like_the_dashboard(tmp_path):
+    """停用项目带着历史失败产物时，不能继续把门禁拖红 —— 而项目页又看不到它。"""
+    keep = _mk_project(tmp_path, "active", regression=True)
+    _write_artifact(keep, "regression.json", all_pass=True)
+    _write_artifact(keep, "perf_security.json", all_pass=True)
+
+    retired = _mk_project(tmp_path, "retired", regression=True)
+    _write_artifact(retired, "regression.json", all_pass=False, summary="早就没维护了")
+    _disable(retired)
+
+    rows = gn.collect_gates(tmp_path)
+    assert [r["pid"] for r in rows] == ["active"]
+    assert gn.summarize(rows, disabled=1)["all_pass"] is True
+    # 不加过滤时停用项目会把它拖红 —— 这正是修之前的行为
+    assert gn.summarize(gn.collect_gates(tmp_path, include_disabled=True))["all_pass"] is False
+
+
+def test_disabled_projects_are_listed_not_silently_hidden(tmp_path):
+    """跳过可以，静默不行 —— 摘要里要交代跳过了谁，否则会被误读成"全都算过了"。"""
+    p = _mk_project(tmp_path, "retired", regression=True)
+    _disable(p)
+    assert gn.disabled_projects(tmp_path) == ["retired"]
+    txt = gn.render_text([], disabled=["retired"])
+    assert "已停用" in txt and "retired" in txt
+
+
+def test_disabled_projects_empty_when_dir_missing(tmp_path):
+    assert gn.disabled_projects(tmp_path / "nope") == []
+
+
+def test_summarize_reports_disabled_count(tmp_path):
+    p = _mk_project(tmp_path, "active", regression=True)
+    _write_artifact(p, "regression.json", all_pass=True)
+    _write_artifact(p, "perf_security.json", all_pass=True)
+    s = gn.summarize(gn.collect_gates(tmp_path), disabled=2)
+    assert s["disabled"] == 2 and s["all_pass"] is True
+
+
+def test_main_skips_disabled_by_default_and_can_include(tmp_path):
+    p = _mk_project(tmp_path, "retired", regression=True)
+    _write_artifact(p, "regression.json", all_pass=False)
+    _disable(p)
+    # 默认跳过 → 扫不到任何项目 → 未执行 → 门禁未达成
+    assert gn.main(["--projects-dir", str(tmp_path), "--dry-run", "--fail-on-gate"]) == 1
+    # 显式包含 → 看到它未通过
+    assert gn.main(["--projects-dir", str(tmp_path), "--dry-run",
+                    "--include-disabled", "--fail-on-gate"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 停用项目（.disabled）—— 必须与看板/控制台口径一致，否则是"幽灵红"
+# --------------------------------------------------------------------------- #
+def _disable(pdir: Path) -> None:
+    (pdir / ".disabled").write_text("", encoding="utf-8")
+
+
+def test_disabled_project_excluded_like_the_dashboard(tmp_path):
+    """停用项目带着历史失败产物时，不能继续把门禁拖红 —— 而项目页又看不到它。"""
+    keep = _mk_project(tmp_path, "active", regression=True)
+    _write_artifact(keep, "regression.json", all_pass=True)
+    _write_artifact(keep, "perf_security.json", all_pass=True)
+
+    retired = _mk_project(tmp_path, "retired", regression=True)
+    _write_artifact(retired, "regression.json", all_pass=False, summary="早就没维护了")
+    _disable(retired)
+
+    rows = gn.collect_gates(tmp_path)
+    assert [r["pid"] for r in rows] == ["active"]
+    assert gn.summarize(rows, disabled=1)["all_pass"] is True
+    # 不加过滤时停用项目会把它拖红 —— 这正是修之前的行为
+    assert gn.summarize(gn.collect_gates(tmp_path, include_disabled=True))["all_pass"] is False
+
+
+def test_disabled_projects_are_listed_not_silently_hidden(tmp_path):
+    """跳过可以，静默不行 —— 摘要里要交代跳过了谁，否则会被误读成"全都算过了"。"""
+    p = _mk_project(tmp_path, "retired", regression=True)
+    _disable(p)
+    assert gn.disabled_projects(tmp_path) == ["retired"]
+    txt = gn.render_text([], disabled=["retired"])
+    assert "已停用" in txt and "retired" in txt
+
+
+def test_disabled_projects_empty_when_dir_missing(tmp_path):
+    assert gn.disabled_projects(tmp_path / "nope") == []
+
+
+def test_summarize_reports_disabled_count(tmp_path):
+    p = _mk_project(tmp_path, "active", regression=True)
+    _write_artifact(p, "regression.json", all_pass=True)
+    _write_artifact(p, "perf_security.json", all_pass=True)
+    s = gn.summarize(gn.collect_gates(tmp_path), disabled=2)
+    assert s["disabled"] == 2 and s["all_pass"] is True
+
+
+def test_main_skips_disabled_by_default_and_can_include(tmp_path):
+    p = _mk_project(tmp_path, "retired", regression=True)
+    _write_artifact(p, "regression.json", all_pass=False)
+    _disable(p)
+    # 默认跳过 → 扫不到任何项目 → 未执行 → 门禁未达成
+    assert gn.main(["--projects-dir", str(tmp_path), "--dry-run", "--fail-on-gate"]) == 1
+    # 显式包含 → 看到它未通过
+    assert gn.main(["--projects-dir", str(tmp_path), "--dry-run",
+                    "--include-disabled", "--fail-on-gate"]) == 1

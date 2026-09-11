@@ -1168,6 +1168,15 @@ async function renderGates(){
     <div class="stat"><div class="k">门禁通过</div><div class="v s-ok">${s.pass||0}</div></div>
     <div class="stat"><div class="k">未通过</div><div class="v s-bad">${s.fail||0}</div></div>
     <div class="stat"><div class="k">未执行</div><div class="v s-purple">${s.not_run||0}</div></div>`;
+  // 跳过了谁要如实说：静默隐藏会让人以为"全都算过了"。
+  // 先清掉上一次的提示（否则切页面回来会越堆越多）。
+  const oldDis=document.getElementById('gateDisabledNote');
+  if(oldDis) oldDis.remove();
+  if(d.disabled&&d.disabled.length){
+    sumEl.insertAdjacentHTML('afterend',
+      `<div class="hint" id="gateDisabledNote" style="margin:-10px 0 14px">`+
+      `已跳过 ${d.disabled.length} 个停用项目（不参与门禁）：${esc(d.disabled.join('、'))}</div>`);
+  }
 
   if(!d.rows.length){ listEl.innerHTML=''; txtEl.value=d.text||''; return; }
 

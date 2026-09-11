@@ -124,18 +124,29 @@ def _verdict(gates: Dict[str, Dict[str, Any]]) -> Tuple[str, str]:
 
 
 def collect_gates(projects_dir: Path,
-                  only: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                  only: Optional[List[str]] = None,
+                  include_disabled: bool = False) -> List[Dict[str, Any]]:
     """扫描项目登记目录，逐项目汇总三道门禁的状态。
 
     `only` 用于**只看本次参与门禁的项目**：CI 跑的是 `STA_PROJECT_ID` 指定的那一个，
     若把仓库里其余从未跑过的项目也算进来，它们全是「未执行」→ 门禁永远红。
+
+    `include_disabled`：默认**跳过已停用的项目**（目录下有 `.disabled` 标记）——
+    与 `project_manager.load_projects()` / 跨项目看板 / 控制台项目页保持一致。
+    不一致的后果很隐蔽：停用项目如果还留着上次的失败产物，会持续把门禁拖红，
+    而界面上又看不到它（因为项目页同样把它隐藏了）→ 变成无法解释的"幽灵红"。
+    跳过的数量会写进摘要（`disabled`），**不静默**。
     """
     root = Path(projects_dir)
     rows: List[Dict[str, Any]] = []
     if not root.is_dir():
         return rows
+    disabled: List[str] = []
     for pdir in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name):
         if not (pdir / "project.yaml").is_file():
+            continue
+        if not include_disabled and (pdir / ".disabled").is_file():
+            disabled.append(pdir.name)
             continue
         meta = _load_project_yaml(pdir / "project.yaml")
         pid = str(meta.get("project_id") or pdir.name)
@@ -158,8 +169,19 @@ def collect_gates(projects_dir: Path,
     return rows
 
 
-def summarize(rows: List[Dict[str, Any]]) -> Dict[str, int]:
-    out = {"projects": len(rows), "pass": 0, "fail": 0, "not_run": 0, "all_pass": 0}
+def disabled_projects(projects_dir: Path) -> List[str]:
+    """列出被停用（目录下有 `.disabled`）的项目名，用于在摘要里如实交代跳过了谁。"""
+    root = Path(projects_dir)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir()
+                  if p.is_dir() and (p / "project.yaml").is_file()
+                  and (p / ".disabled").is_file())
+
+
+def summarize(rows: List[Dict[str, Any]], disabled: int = 0) -> Dict[str, int]:
+    out = {"projects": len(rows), "pass": 0, "fail": 0, "not_run": 0,
+           "disabled": disabled, "all_pass": 0}
     for r in rows:
         out[r["verdict"]] = out.get(r["verdict"], 0) + 1
     # 一个项目都没有 → 谈不上"通过"（多半是流水线跑错了目录）
@@ -170,21 +192,28 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, int]:
 # --------------------------------------------------------------------------- #
 # 渲染
 # --------------------------------------------------------------------------- #
-def render_text(rows: List[Dict[str, Any]], title: str = "") -> str:
+def render_text(rows: List[Dict[str, Any]], title: str = "",
+                disabled: Optional[List[str]] = None) -> str:
     """渲染成人类可读摘要（钉钉/邮件正文直接用它）。"""
-    summ = summarize(rows)
+    disabled = list(disabled or [])
+    summ = summarize(rows, disabled=len(disabled))
     lines: List[str] = []
     if title:
         lines.append(title)
     if not rows:
         lines.append("未发现任何已接入项目（projects/ 下没有 project.yaml）。")
         lines.append("门禁未执行 ≠ 通过，请确认被测项目是否已登记、--project 是否写对。")
+        if disabled:
+            lines.append(f"（另有 {len(disabled)} 个已停用项目未计入：{'、'.join(disabled)}）")
         return "\n".join(lines)
 
     lines.append(
         f"项目 {summ['projects']} 个 · 通过 {summ['pass']} · "
         f"未通过 {summ['fail']} · 未执行 {summ['not_run']}"
     )
+    if disabled:
+        # 如实交代跳过了谁：静默隐藏会让人以为"全都算过了"
+        lines.append(f"（已停用、未计入：{'、'.join(disabled)}）")
     lines.append("")
     for r in rows:
         mark = {"pass": "✅", "fail": "❌", "not_run": "⏭"}.get(r["verdict"], "?")
@@ -233,6 +262,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--project", action="append", default=[], metavar="PID",
                     help="只看指定项目（可重复）。CI 只跑了一个项目时必须加，"
                          "否则其余从未跑过的项目会全记「未执行」→ 门禁永远红")
+    ap.add_argument("--include-disabled", action="store_true",
+                    help="把已停用的项目也算进来（默认跳过，与看板/控制台一致）")
     ap.add_argument("--dry-run", action="store_true", help="只打印摘要，不发送（无凭据/本地预览用）")
     ap.add_argument("--out", default="", help="把摘要写入指定文件（供下游作业复用）")
     ap.add_argument("--text-file", default="", help="直接发送该文件内容，不重算（CI 通知作业用）")
@@ -250,9 +281,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         _send(text, args.dry_run, subject="软件测试智能体 · CI 门禁结果")
         return 0
 
-    rows = collect_gates(Path(args.projects_dir), only=args.project or None)
-    summ = summarize(rows)
-    text = render_text(rows, title=args.title)
+    pdir = Path(args.projects_dir)
+    rows = collect_gates(pdir, only=args.project or None,
+                         include_disabled=args.include_disabled)
+    disabled = [] if args.include_disabled else disabled_projects(pdir)
+    summ = summarize(rows, disabled=len(disabled))
+    text = render_text(rows, title=args.title, disabled=disabled)
 
     if args.out:
         try:
