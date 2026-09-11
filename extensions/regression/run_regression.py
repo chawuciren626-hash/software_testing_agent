@@ -53,6 +53,34 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
+def load_dotenv() -> Optional[Path]:
+    """载入仓库根 .env（密钥分离：只有此文件里有真实口令，且已被 gitignore）。
+
+    ⚠ 为什么必须显式提供：本模块既被 project_manager 调用（它启动时已载入 .env），
+    也会被**独立运行**（`python run_regression.py --project ...`）或从别的扩展调用。
+    后两种情况下如果没人载入 .env，`_resolve_auth` 取到的是空口令，
+    登录必然失败 → 受保护接口全部 401 → 表现为"回归大面积失败"，
+    极难排查（实际只是凭据没加载）。因此独立入口必须先调用本函数。
+    用 setdefault 语义：不覆盖已存在的环境变量，CI 里显式注入的值优先。
+    """
+    roots = []
+    if os.environ.get("STA_ROOT"):
+        roots.append(Path(os.environ["STA_ROOT"]))
+    roots.append(Path(__file__).resolve().parents[2])   # extensions/regression/x.py -> 仓库根
+    for root in roots:
+        p = root / ".env"
+        if not p.is_file():
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        return p
+    return None
+
+
 def _resolve_auth(project: Dict[str, Any]) -> Dict[str, Any]:
     """从 project.yaml 解析认证上下文；口令/token 取自环境变量（密钥分离）。"""
     env = project.get("env", {}) or {}
@@ -378,6 +406,7 @@ def main() -> None:
     ap.add_argument("--json", help="输出 JSON 结果路径")
     ap.add_argument("--only", help="只跑指定名称的场景；配合 --json 时会合并回既有结果（不覆盖完整报告）")
     args = ap.parse_args()
+    load_dotenv()   # 独立运行时必须自行载入 .env，否则凭据为空导致大面积假失败
     if args.only and args.json:
         summary = rerun_one(Path(args.project), Path(args.regression),
                             Path(args.json), args.only)

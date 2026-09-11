@@ -291,6 +291,35 @@ svg{display:block;}
 .err-msg{display:none;background:var(--bad-soft);color:var(--bad);font-size:12.5px;border-radius:9px;padding:9px 13px;margin-top:14px;font-weight:500;}
 .tab-row{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;}
 .btn.tab.active{background:var(--primary-soft);border-color:var(--primary);color:var(--primary-600);}
+/* ---------- 性能与安全面板（④） ---------- */
+.ps-panel{max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--surface);}
+.ps-empty{color:var(--muted);font-size:13px;line-height:1.9;padding:22px 4px;text-align:center;}
+.ps-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border-radius:8px;margin-bottom:12px;}
+.ps-head.ok{background:var(--ok-soft);}
+.ps-head.bad{background:var(--bad-soft);}
+.ps-verdict{font-size:13px;font-weight:800;}
+.ps-head.ok .ps-verdict{color:var(--ok);}
+.ps-head.bad .ps-verdict{color:var(--bad);}
+.ps-sum{font-size:12px;color:var(--text);opacity:.85;line-height:1.6;}
+.ps-warn{background:var(--warn-soft);color:#92400e;font-size:12.5px;line-height:1.7;padding:9px 12px;border-radius:8px;margin-bottom:10px;}
+.ps-title{font-size:13px;font-weight:800;color:var(--ink);margin:14px 0 8px;padding-left:8px;border-left:3px solid var(--primary);}
+.ps-sub{font-size:11.5px;color:var(--muted);margin-bottom:8px;line-height:1.7;word-break:break-all;}
+.ps-kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+.ps-kpis>div{flex:1;min-width:96px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:2px;}
+.ps-kpis b{font-size:17px;color:var(--ink);}
+.ps-kpis span{font-size:11px;color:var(--muted);}
+.ps-scroll{overflow-x:auto;margin-bottom:6px;}
+.ps-tbl{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);}
+.ps-tbl th{background:var(--border-2);color:var(--muted);font-size:11px;font-weight:700;text-align:left;padding:7px 9px;white-space:nowrap;}
+.ps-tbl td{padding:7px 9px;border-bottom:1px solid var(--border-2);vertical-align:top;}
+.ps-tbl tr:last-child td{border-bottom:0;}
+.ps-tbl td.mono{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap;}
+.ps-tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;white-space:nowrap;}
+.ps-tag.ok{background:var(--ok-soft);color:var(--ok);}
+.ps-tag.bad{background:var(--bad-soft);color:var(--bad);}
+.ps-tag.warn{background:var(--warn-soft);color:var(--warn);}
+.ps-sel,.ps-num{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;}
+.ps-num{width:66px;}
 .hint{font-size:12px;color:var(--muted);line-height:1.6;}
 </style>
 </head>
@@ -495,11 +524,13 @@ svg{display:block;}
       <button class="btn tab sm" data-tab="regression" onclick="switchTab('regression')">回归配置</button>
       <button class="btn tab sm" data-tab="cases" onclick="switchTab('cases')">已生成用例</button>
       <button class="btn tab sm" data-tab="lessons" onclick="switchTab('lessons')">情景记忆</button>
+      <button class="btn tab sm" data-tab="perfsec" onclick="switchTab('perfsec')">性能与安全</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
     <textarea id="d_cases" class="mono" style="display:none" readonly></textarea>
     <textarea id="d_lessons" class="mono" style="display:none" readonly></textarea>
+    <div id="d_perfsec" class="ps-panel" style="display:none"></div>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
     <div class="foot">
@@ -511,6 +542,16 @@ svg{display:block;}
         <input type="checkbox" id="cbAgentic"><span>多步自审编排</span>
       </label>
       <button class="btn" id="btnGenCases" style="display:none" onclick="generateCases()">立即生成用例</button>
+      <span id="btnPerfSecWrap" style="display:none;align-items:center;gap:6px">
+        <select id="psOnly" class="ps-sel" title="只跑其中一项，默认两项都跑">
+          <option value="">性能 + 安全</option>
+          <option value="perf">仅性能</option>
+          <option value="security">仅安全</option>
+        </select>
+        <input id="psUsers" class="ps-num" type="number" min="1" max="200" placeholder="并发" title="并发数，留空用 project.yaml 配置">
+        <input id="psIter" class="ps-num" type="number" min="1" max="200" placeholder="次数" title="每用户请求次数，留空用配置">
+        <button class="btn" onclick="runPerfSecurity(true)" title="④ 性能与安全冒烟：只压只读接口，环境不可达时按未通过处理">${svg('shield')} 性能与安全</button>
+      </span>
       <button class="btn primary" id="btnRunPipeline" onclick="runPipelineFromDetail()" title="保存当前编辑内容后，按上面勾选的生成模式跑完整流程（需求→用例→接口→回归→报告）">跑全流程</button>
       <button class="btn" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
     </div>
@@ -619,6 +660,8 @@ const ICONS={
   pause:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="10" y1="15" x2="10" y2="9"/><line x1="14" y1="15" x2="14" y2="9"/></svg>',
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
   download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  gauge:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4-3"/><path d="M3 12h2M19 12h2M12 3v2"/></svg>',
+  shield:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>',
 };
 
 // ---------- 导航 ----------
@@ -728,16 +771,29 @@ async function renderProjects(){
     if(!reg){badge='<span class="badge none">未执行回归</span>';}
     else if(reg.all_pass){badge=`<span class="badge ok">● 回归通过 ${reg.passed}/${reg.total}</span>`;}
     else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">● 回归未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
+    // ④ 性能与安全：独立门禁，卡片上给一个概括徽标（详情页有完整表格）
+    const ps=p.perf_security;
+    let psBadge='';
+    if(ps){
+      const pok=!!ps.all_pass;
+      const ov=((ps.perf||{}).overall)||{};
+      const sc=ps.security||{};
+      const tip=`性能：P95 ${ov.p95_ms||0}ms / 错误率 ${(((ov.error_rate||0)*100).toFixed(2))}% / ${ov.rps||0} rps`+
+                `　安全：${sc.passed_count||0} 通过 / ${sc.failed||0} 失败 / ${sc.warned||0} 提示`;
+      psBadge=`<span class="badge ${pok?'ok':'bad'}" title="${esc(tip)}">`+
+              `${svg('shield')} ${pok?'性能安全通过':'性能安全未通过'}</span>`;
+    }
     const div=document.createElement('div');
     div.className='card'+(p.disabled?' disabled':'');
     const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
     div.innerHTML=`
       <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}</div></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}</div></div>
       <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
       <div class="ops">
         <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','regression')">${svg('refresh')} 跑核心回归</button>
+        <button class="btn sm" onclick="exec('${jsq(p.pid)}','perf-security')" title="④ 性能与安全冒烟：并发延迟指标 + 鉴权/注入/泄露/配置安全检查">${svg('shield')} 性能与安全</button>
         <button class="btn sm" onclick="openDetail('${jsq(p.pid)}')">${svg('edit')} 需求/配置</button>
         <button class="btn sm" onclick="openReport('/reports/${jsq(p.pid)}/report.html')" ${p.has_report?'':'disabled'}>${svg('eye')} 查看报告</button>
         <button class="btn sm" title="${p.disabled?'恢复该项目（重新参与回归与看板）':'停用后不参与回归与看板，数据保留'}"
@@ -750,7 +806,10 @@ async function renderProjects(){
 
 // ---------- 执行 ----------
 async function exec(pid,kind,body){
-  const url=kind==='run'?`/api/projects/${pid}/run`:`/api/projects/${pid}/regression`;
+  const URLS={run:p=>`/api/projects/${p}/run`,
+              regression:p=>`/api/projects/${p}/regression`,
+              'perf-security':p=>`/api/projects/${p}/perf-security`};
+  const url=(URLS[kind]||URLS.regression)(pid);
   const opts={method:'POST'};
   if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}
   const r=await fetch(url,opts); const d=await r.json();
@@ -762,6 +821,17 @@ async function exec(pid,kind,body){
   currentLogTask=d.task_id;
   document.querySelector('.nav-item[data-page="tasks"]').click();
   pollTask(d.task_id);
+}
+// ④ 性能与安全冒烟（从项目详情页触发，支持只跑性能/只跑安全）
+async function runPerfSecurity(fromDetail){
+  const pid=fromDetail?detailPid:null;
+  if(!pid)return;
+  const only=(document.getElementById('psOnly')||{}).value||'';
+  const users=parseInt((document.getElementById('psUsers')||{}).value)||0;
+  const iter=parseInt((document.getElementById('psIter')||{}).value)||0;
+  const body={}; if(only)body.only=only; if(users>0)body.users=users; if(iter>0)body.iterations=iter;
+  closeDetail();
+  exec(pid,'perf-security',body);
 }
 // 从项目详情「跑全流程」：先落盘当前编辑内容，再按勾选的生成模式执行
 async function runPipelineFromDetail(){
@@ -1532,6 +1602,8 @@ async function openDetail(pid){
       ? ld.content
       : '（暂无情景记忆：跑过一次全流程 / 回归后，会自动从失败快照聚类生成历史易错点重点覆盖清单）';
   } catch(e){ document.getElementById('d_lessons').value = '（读取情景记忆失败）'; }
+  // ④ 性能与安全结果（可能未执行 → 面板给出引导）
+  renderPerfSecPanel(d.perf_security||null);
   // 拉取 LLM 可用性，决定是否展示「LLM 智能生成」开关
   try{
     const s=await fetch('/api/llm/status'); const sd=await s.json();
@@ -1545,22 +1617,86 @@ async function openDetail(pid){
   document.getElementById('detailMask').classList.add('show');
 }
 function switchTab(tab){
-  ['requirements','regression','cases','lessons'].forEach(t=>{
-    document.getElementById('d_'+t).style.display=t===tab?'block':'none';
+  ['requirements','regression','cases','lessons','perfsec'].forEach(t=>{
+    const el=document.getElementById('d_'+t);
+    el.style.display = t===tab ? (t==='perfsec'?'block':'block') : 'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
     if(b)b.classList.toggle('active',t===tab);
   });
   const gen=document.getElementById('btnGenCases');
   if(gen) gen.style.display=tab==='cases'?'':'none';
+  const psWrap=document.getElementById('btnPerfSecWrap');
+  if(psWrap) psWrap.style.display=tab==='perfsec'?'':'none';
   let hint=tab==='cases'
-    ? '用例由需求生成（规则版：每条需求拆功能/边界/异常三例）。点「立即生成用例」可按当前需求重新生成。'
-    : '可直接编辑保存；保存后下一次执行即生效。';
+    ? '用例由需求生成（规则版：每条需求拆功能/边界/异常三件套）。点「立即生成用例」可按当前需求重新生成。'
+    : (tab==='perfsec'
+      ? '④ 性能与安全冒烟：性能给并发/延迟分位/错误率/吞吐；安全查鉴权、注入、错误回显与响应头。环境不可达时按未通过处理（避免假绿）。'
+      : '可直接编辑保存；保存后下一次执行即生效。');
   const rm=window.__runMeta;
   if(tab==='cases'&&rm&&rm.mode){
     const extra=(rm.lessons_injected?' · 注入历史易错点':'')+(rm.cases?` · ${rm.cases} 条用例`:'');
     hint+=`  ｜ 上次运行：${rm.mode}${extra}（${rm.ts||''}）`;
   }
   document.getElementById('d_hint').textContent=hint;
+}
+
+/* 渲染「性能与安全」面板（数据来自 /api/projects/<pid>/files 的 perf_security） */
+function renderPerfSecPanel(ps){
+  const box=document.getElementById('d_perfsec');
+  if(!box) return;
+  if(!ps){
+    box.innerHTML=`<div class="ps-empty">尚未执行性能与安全冒烟。<br>点右下角「性能与安全」按钮开始（默认并发 8 × 5 次/目标，只压只读接口）。</div>`;
+    return;
+  }
+  const ok=!!ps.all_pass;
+  const perf=ps.perf||{}, sec=ps.security||{}, ov=perf.overall||{}, cfgp=perf.config||{};
+  let h=`<div class="ps-head ${ok?'ok':'bad'}">
+      <span class="ps-verdict">${ok?'通过':'未通过'}</span>
+      <span class="ps-sum">${esc(ps.summary||'')}</span></div>`;
+  if(ps.baseline && ps.baseline.ok===false){
+    h+=`<div class="ps-warn">基线未通过：${esc(ps.baseline.reason||'')}<br>此状态下结果不计为安全缺陷，但门禁按未通过处理。</div>`;
+  }
+  // 部分重跑说明：只跑一侧时，另一侧沿用上次结果
+  if(Array.isArray(ps.stale_sections)&&ps.stale_sections.length){
+    const names=ps.stale_sections.map(k=>k==='perf'?'性能':'安全').join('、');
+    const when=ps.perf_from_previous||ps.security_from_previous||'';
+    h+=`<div class="ps-sub">说明：${names}为上次结果（${esc(when)}），本次只重跑了另一侧；门禁按两侧合并判定。</div>`;
+  }
+  // 性能
+  h+=`<div class="ps-title">性能指标</div>`;
+  if(perf.skipped||!perf.enabled){
+    h+=`<div class="ps-warn">未执行：${esc(perf.reason||'本次未启用')}</div>`;
+  }else{
+    h+=`<div class="ps-sub">并发 ${cfgp.users} × ${cfgp.iterations} 次 · 阈值 ${esc(JSON.stringify(cfgp.thresholds||{}))} · ${esc(perf.target_source||'')}</div>`;
+    h+=`<div class="ps-kpis">
+      <div><b>${ov.p95_ms||0}</b><span>P95 (ms)</span></div>
+      <div><b>${(((ov.error_rate||0)*100).toFixed(2))}%</b><span>错误率</span></div>
+      <div><b>${ov.rps||0}</b><span>吞吐 rps</span></div>
+      <div><b>${ov.samples||0}</b><span>样本数</span></div></div>`;
+    const rows=(perf.targets||[]).map(t=>`<tr class="${t.result==='PASS'?'ok':'bad'}">
+        <td>${esc(t.name)}</td><td class="mono">${esc(t.method)} ${esc(t.path)}</td>
+        <td>${t.ok}/${t.requests}</td><td>${((t.error_rate||0)*100).toFixed(2)}%</td>
+        <td>${t.p50_ms}</td><td>${t.p95_ms}</td><td>${t.p99_ms}</td><td>${t.rps}</td>
+        <td>${esc((t.threshold_fails||[]).join('；')||'—')}</td></tr>`).join('');
+    h+=`<div class="ps-scroll"><table class="ps-tbl"><tr><th>目标</th><th>接口</th><th>成功</th><th>错误率</th><th>P50</th><th>P95</th><th>P99</th><th>RPS</th><th>未达阈值</th></tr>${rows}</table></div>`;
+  }
+  // 安全
+  h+=`<div class="ps-title">安全检查</div>`;
+  if(!sec.enabled||!(sec.checks||[]).length){
+    h+=`<div class="ps-warn">未执行：${esc(sec.reason||'本次未启用')}</div>`;
+  }else{
+    h+=`<div class="ps-sub">通过 ${sec.passed_count||0} · 失败 ${sec.failed||0} · 提示 ${sec.warned||0} · 跳过 ${sec.skipped||0}</div>`;
+    const rows=(sec.checks||[]).map(c=>{
+      const cls=c.status==='PASS'?'ok':(c.status==='FAIL'?'bad':'warn');
+      const label={PASS:'通过',FAIL:'失败',WARN:'提示',SKIP:'跳过'}[c.status]||c.status;
+      return `<tr class="${cls}"><td>${esc(c.name)}</td><td class="mono">${esc(c.category)}</td>
+        <td><span class="ps-tag ${cls}">${label}</span></td>
+        <td title="${esc(c.evidence||'')}">${esc(c.detail||'')}</td></tr>`;
+    }).join('');
+    h+=`<table class="ps-tbl"><tr><th>检查项</th><th>类别</th><th>状态</th><th>说明（悬停看证据）</th></tr>${rows}</table></div>`;
+  }
+  h+=`<div class="ps-sub" style="margin-top:10px">执行时间：${esc(ps.generated_at||'')} · 环境 ${esc(ps.base_url||'')}</div>`;
+  box.innerHTML=h;
 }
 /* 按当前需求文本立即生成用例，无需跑全流程 */
 async function generateCases(){

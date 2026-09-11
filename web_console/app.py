@@ -176,6 +176,18 @@ def _read_regression(pdir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _read_perf_security(pdir: Path) -> Optional[Dict[str, Any]]:
+    """读取 ④ 性能与安全冒烟结果（未执行返回 None）。"""
+    f = pdir / "artifacts" / "perf_security.json"
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 @app.get("/api/projects")
 def api_projects() -> Any:
     # 停用的项目默认不展示（也不参与看板/门禁）；?include_disabled=1 时一并列出，
@@ -195,6 +207,7 @@ def api_projects() -> Any:
             "created_at": meta.get("created_at", ""),
             "has_report": (pdir / "artifacts" / "report.html").is_file(),
             "reg": _read_regression(pdir),
+            "perf_security": _read_perf_security(pdir),
             "disabled": pm.is_disabled(pdir),
         })
     return jsonify({"projects": items})
@@ -219,7 +232,15 @@ def api_project_files(pid: str) -> Any:
         out[key] = f.read_text(encoding="utf-8") if f.is_file() else ""
     cases = pdir / "artifacts" / "cases.md"
     out["cases"] = cases.read_text(encoding="utf-8") if cases.is_file() else ""
-    return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir)})
+    ps_file = pdir / "artifacts" / "perf_security.json"
+    perf_sec: Optional[Dict[str, Any]] = None
+    if ps_file.is_file():
+        try:
+            perf_sec = json.loads(ps_file.read_text(encoding="utf-8"))
+        except Exception:
+            perf_sec = None
+    return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir),
+                    "perf_security": perf_sec})
 
 
 def _llm_available() -> bool:
@@ -430,6 +451,31 @@ def api_regression(pid: str) -> Any:
     if not (pm.PROJECTS_DIR / pid / "project.yaml").is_file():
         return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
     tid = _spawn_task("regression", pid, ["regression", pid])
+    return jsonify({"ok": True, "task_id": tid})
+
+
+@app.post("/api/projects/<pid>/perf-security")
+def api_perf_security(pid: str) -> Any:
+    """④ 性能与安全冒烟。
+
+    body 可选：{only: "perf"|"security", users: int, iterations: int}。
+    门禁语义与回归一致：环境不可达 → 全 SKIP → 退出码非零（防 CI 假绿）。
+    """
+    if not (pm.PROJECTS_DIR / pid / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    body = request.get_json(silent=True) or {}
+    extra: List[str] = []
+    only = str(body.get("only") or "").strip()
+    if only in ("perf", "security"):
+        extra += ["--only", only]
+    for key, flag in (("users", "--users"), ("iterations", "--iterations")):
+        try:
+            v = int(body.get(key))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            extra += [flag, str(v)]
+    tid = _spawn_task("perf-security", pid, ["perf-security", pid], extra_args=extra)
     return jsonify({"ok": True, "task_id": tid})
 
 

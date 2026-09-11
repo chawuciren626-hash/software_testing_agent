@@ -189,3 +189,79 @@ def test_cases_endpoint_injects_lessons(monkeypatch, tmp_path):
     d = r.get_json()
     assert d["lessons_injected"] is True
     assert "登录失败锁定" in (captured.get("extra") or "")
+
+
+# ---------------------------------------------------------------------------
+# ④ 性能与安全冒烟（Web 层）
+# ---------------------------------------------------------------------------
+def test_perf_security_endpoint_maps_options_to_flags(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(kind=kind, pid=pid, args=args, extra_args=extra_args) or "tid")
+    r = client.post("/api/projects/demo/perf-security",
+                    json={"only": "security", "users": 12, "iterations": 8})
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    assert captured["kind"] == "perf-security"
+    assert captured["args"] == ["perf-security", "demo"]
+    assert captured["extra_args"] == ["--only", "security", "--users", "12", "--iterations", "8"]
+
+
+def test_perf_security_endpoint_defaults_and_ignores_bad_values(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(extra_args=extra_args) or "tid")
+    # only 非法 / 数值非法 → 全部忽略，走 project.yaml 里的默认配置
+    r = client.post("/api/projects/demo/perf-security",
+                    json={"only": "hack", "users": "abc", "iterations": -3})
+    assert r.status_code == 200
+    assert captured["extra_args"] == []
+
+
+def test_perf_security_endpoint_unknown_project_404(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.post("/api/projects/nope/perf-security")
+    assert r.status_code == 404
+
+
+def test_files_endpoint_exposes_perf_security(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "perf_security.json").write_text(
+        '{"all_pass": true, "summary": "ok"}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["perf_security"]["all_pass"] is True
+
+
+def test_files_endpoint_perf_security_absent_is_none(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["perf_security"] is None
+
+
+def test_projects_api_includes_perf_security_field(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "perf_security.json").write_text(
+        '{"all_pass": false, "summary": "x"}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = client.get("/api/projects").get_json()["projects"]
+    assert len(items) == 1
+    assert items[0]["perf_security"]["all_pass"] is False
+
+
+def test_index_has_perf_security_ui_hooks():
+    """前端必须真的提供入口与渲染函数，否则接口再好用户也用不上。"""
+    html = client.get("/").get_data(as_text=True)
+    for token in ("perf-security", "renderPerfSecPanel", "d_perfsec", "runPerfSecurity"):
+        assert token in html, f"前端缺少 {token}"

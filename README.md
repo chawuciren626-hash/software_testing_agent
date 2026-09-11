@@ -34,7 +34,7 @@ software_testing_agent/
 │   ├── api_testing/            # 接口自动化（pytest + requests）
 │   ├── requirements_to_cases/  # 需求 → 测试用例生成
 │   ├── reporting/              # 报告与 CI 增强
-│   ├── perf_security/          # 性能 / 安全探索测试骨架
+│   ├── perf_security/          # 性能 / 安全冒烟（线程池压测 + 安全检查）
 │   └── regression/             # 核心业务回归执行引擎
 ├── web_console/                # 可视化控制台
 │   ├── app.py                  # Flask 后端（薄封装，调用 project_manager）
@@ -120,7 +120,12 @@ python project_manager.py dashboard      # 生成跨项目总览看板
 - **api_testing**：`pytest + requests` 接口自动化，声明式 `expect_json`（支持点路径与 `__not_null__`），服务不可达自动 skip。
 - **requirements_to_cases**：把 `requirements.md` 按规则拆成用例草稿（功能/边界/异常 + 优先级 + 可自动化标记），无需 LLM；加 `--llm` 可走 LLM 增强。**默认 provider=openai**（OpenAI 兼容协议），配置 `LLM_API_KEY` + `LLM_BASE_URL` + `LLM_MODEL` 即可用 DeepSeek / 通义千问 / 智谱 GLM / Kimi 等；设 `LLM_PROVIDER=gemini` + `GOOGLE_API_KEY` 则走 Gemini（可用 `GEMINI_MODEL` / `GEMINI_API_BASE` 覆盖）；任何失败自动降级规则版。
 - **reporting**：生成项目级 HTML 报告（分组用例卡片 + 回归表格 + 门禁状态）。
-- **perf_security**：性能 / 安全探索测试骨架（待 LLM Key 后串联）。
+- **perf_security**：性能 / 安全**冒烟**执行器（`run_perf_security.py`，零新增依赖）。
+  性能用线程池并发，给 P50/P95/P99、错误率、吞吐与**阈值门禁**；安全查 6 项（未授权访问、错口令、SQL 注入、
+  堆栈泄露、用户枚举、安全响应头）。压测目标默认**从 `regression.yaml` 的只读接口自动派生**（写操作默认跳过）。
+  三道闸门防误判：业务码判错（HTTP 200 但 code=500 仍算失败）、环境不可达不判绿、基线登录失败时跳过而不是报假漏洞。
+  CLI：`python project_manager.py perf-security <项目ID>`（`--only perf|security`、`--users`、`--iterations`），
+  或 `python project_manager.py run <项目ID> --perf` 并入全流程。`locustfile_api.py` 保留作专职长压入口。
 - **regression**：核心业务回归执行与单场景重跑合并。
 
 ---

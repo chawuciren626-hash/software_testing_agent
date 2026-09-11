@@ -41,7 +41,7 @@
 1. ❌ 接口(API)自动化（基座只做 Web，无 REST 适配）
 2. ❌ 需求分析→用例（基座有 PR 分析，但无「需求文档→结构化用例」链路）
 3. ⚠️ 报告仅 Markdown（缺 Allure/HTML + CI 通知：钉钉/163 邮件）
-4. ❌ 性能/安全探索（缺压测、鉴权/注入等适配器与 mission）
+4. ✅ 性能/安全探索（已实现 `extensions/perf_security/run_perf_security.py`：线程池并发压测 + 6 项安全检查，接入 CLI/报告/看板/Web）
 
 ---
 
@@ -52,7 +52,7 @@
 | ①接口(API)自动化 | `config.yaml` 的 app/paths、MCP/Skills 机制 | `extensions/api_testing/` | pytest+requests 直连 mall-admin；`unique_suffix` fixture 数据隔离；产出可提交用例；并以 Skill 形式供智能体调用 |
 | ②需求分析→用例 | `missions/*.yaml`、`pr_analyzer.py` 思路 | `extensions/requirements_to_cases/` | 需求/PR → 结构化用例(等价类/边界值/场景法)；可经 LLM 或 Skill 生成；落地为 mission |
 | ③报告与CI增强 | `report_*/test_report.md` | `extensions/reporting/` | 聚合 Markdown → HTML/Allure；GitHub Actions + 钉钉 + 163 邮件（复用你 api_auto_demo 经验） |
-| ④性能/安全探索 | 适配器契约、`orchestration` 人格注册 | `extensions/perf_security/` | 性能：locust 适配；安全：鉴权/注入 mission；扩展高级人格 |
+| ④性能/安全冒烟 | 适配器契约、`orchestration` 人格注册 | `extensions/perf_security/` | 性能：线程池并发（p50/p95/p99、错误率、吞吐、阈值门禁），不依赖 locust；安全：鉴权/注入/错误回显/响应头 6 项检查；三道闸门防假绿与假红（业务码判错、环境不可达不判绿、基线校验防假漏洞） |
 
 ---
 

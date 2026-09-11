@@ -101,6 +101,29 @@ env:
     token_field: token
 requirements_file: requirements.md
 regression_file: regression.yaml
+# ④ 性能与安全冒烟（可选）。整段不写也能跑：压测目标会自动从 regression.yaml
+#   的只读接口派生，安全检查用默认清单。需要更精细控制时再取消注释。
+# perf_security:
+#   perf:
+#     users: 10            # 并发虚拟用户
+#     iterations: 5        # 每用户请求次数（总量 = users × iterations）
+#     warmup: 2            # 预热次数，不计入统计
+#     thresholds:          # 留空 / 0 表示不做阈值判定
+#       p95_ms: 800
+#       p99_ms: 1500
+#       max_error_rate: 0.01   # 比例，0.01 = 1%
+#       min_rps: 5
+#     targets:             # 不写则从 regression.yaml 派生（写操作默认跳过）
+#       - name: 管理员列表
+#         method: GET
+#         path: /admin/list
+#         auth: required
+#         expect_code: 200     # 业务码；不写则只看 HTTP 状态码
+#   security:
+#     protected:           # 未授权访问检查的靶子；不写则从 regression.yaml 派生
+#       - name: 当前管理员信息
+#         method: GET
+#         path: /admin/info
 created_at: {today}
 """
 
@@ -354,6 +377,45 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
 
 
 RUN_META_FILE = "run_meta.json"
+PERF_SEC_FILE = "perf_security.json"
+
+
+def _step_perf_security(pdir: Path, users: Optional[int] = None,
+                        iterations: Optional[int] = None,
+                        only: Optional[str] = None) -> Dict[str, Any]:
+    """性能 + 安全冒烟：结果落 artifacts/perf_security.json，供报告与 Web 复用。
+
+    与核心回归同源的防假绿约定：环境不可达（基线登录失败）时全部 SKIP，
+    all_pass=False，退出码非零，避免 CI 拿到"性能与安全通过"的虚假信号。
+    """
+    sys.path.insert(0, str(ROOT / "extensions" / "perf_security"))
+    import run_perf_security as ps  # noqa: E402
+
+    out_json = pdir / "artifacts" / PERF_SEC_FILE
+    print("  [性能与安全] 执行冒烟（性能：并发/延迟/错误率；安全：鉴权/注入/泄露/配置）...")
+    return ps.run_all(pdir / "project.yaml", pdir / "regression.yaml", out_json,
+                      only=only, users=users, iterations=iterations)
+
+
+def _read_perf_security(pdir: Path) -> Optional[Dict[str, Any]]:
+    f = Path(pdir) / "artifacts" / PERF_SEC_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _read_regression(pdir: Path) -> Dict[str, Any]:
+    f = Path(pdir) / "artifacts" / "regression.json"
+    if f.is_file():
+        try:
+            return json.loads(f.read_text(encoding="utf-8")) or {}
+        except Exception:
+            pass
+    return {}
 
 
 def _write_run_meta(pdir: Path, **fields: Any) -> Dict[str, Any]:
@@ -520,6 +582,120 @@ def _cases_html(md_text: str) -> Tuple[str, int]:
     ), meta.get("count", len(rows))
 
 
+def _ps_result_badge(result: Any) -> str:
+    v = str(result)
+    if v == "PASS":
+        return "<span class='tag ok'>通过</span>"
+    if v == "SKIP":
+        return "<span class='tag skip'>跳过</span>"
+    if v == "WARN":
+        return "<span class='tag warn'>提示</span>"
+    return "<span class='tag bad'>失败</span>"
+
+
+def _perf_security_card_html(pf: Dict[str, Any]) -> str:
+    """渲染「性能与安全冒烟」卡片（性能指标表 + 安全检查表）。"""
+    ok_all = bool(pf.get("all_pass"))
+    gate = ("<span class='gate ok'>通过</span>" if ok_all
+            else "<span class='gate bad'>未通过</span>")
+    bloom = _h(pf.get("summary") or "")
+
+    perf = pf.get("perf") or {}
+    sec = pf.get("security") or {}
+
+    # ---- 性能表 ----
+    targets = perf.get("targets") or []
+    if not perf.get("enabled"):
+        perf_html = "<div class='reg-empty'>本次未执行性能冒烟。</div>"
+    elif perf.get("skipped"):
+        perf_html = (f"<div class='ps-note warn'>未执行：{_h(perf.get('reason', ''))}</div>")
+    elif not targets:
+        perf_html = "<div class='reg-empty'>没有可压测的目标。</div>"
+    else:
+        ov = perf.get("overall") or {}
+        rows = "".join(
+            f"<tr class='{('ok' if t.get('result') == 'PASS' else ('skip' if t.get('result') == 'SKIP' else 'bad'))}'>"
+            f"<td class='name'>{_h(t.get('name'))}</td>"
+            f"<td class='method'>{_h(t.get('method'))} {_h(t.get('path'))}</td>"
+            f"<td class='actual'>{_h(t.get('requests'))}</td>"
+            f"<td class='actual'>{_h(t.get('ok'))}</td>"
+            f"<td class='actual'>{float(t.get('error_rate') or 0) * 100:.2f}%</td>"
+            f"<td class='actual'>{_h(t.get('p50_ms'))}</td>"
+            f"<td class='actual'>{_h(t.get('p95_ms'))}</td>"
+            f"<td class='actual'>{_h(t.get('p99_ms'))}</td>"
+            f"<td class='actual'>{_h(t.get('rps'))}</td>"
+            f"<td class='result'>{_ps_result_badge(t.get('result'))}</td>"
+            f"<td class='detail'>{_h('；'.join(t.get('threshold_fails') or []))}</td></tr>"
+            for t in targets
+        )
+        cfgp = perf.get("config") or {}
+        thr = cfgp.get("thresholds") or {}
+        thr_txt = "、".join(
+            f"{k}={v}" for k, v in
+            [("P95(ms)", thr.get("p95_ms")), ("P99(ms)", thr.get("p99_ms")),
+             ("最大错误率", thr.get("max_error_rate")), ("最小吞吐(rps)", thr.get("min_rps"))]
+            if v
+        ) or "未设置阈值"
+        perf_html = (
+            f"<div class='ps-sub'>并发 {_h(cfgp.get('users'))} · 每用户 {_h(cfgp.get('iterations'))} 次"
+            f" · 阈值：{_h(thr_txt)} · 目标来源：{_h(perf.get('target_source'))}</div>"
+            "<div class='table-wrap'><table class='reg-table'>"
+            "<thead><tr><th>目标</th><th>接口</th><th>请求</th><th>成功</th><th>错误率</th>"
+            "<th>P50</th><th>P95</th><th>P99</th><th>RPS</th><th>结果</th><th>未达阈值</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+            f"<div class='ps-sub'>整体：样本 {_h(ov.get('samples'))} · 错误率 "
+            f"{float(ov.get('error_rate') or 0) * 100:.2f}% · P50 {_h(ov.get('p50_ms'))}ms"
+            f" · P95 {_h(ov.get('p95_ms'))}ms · P99 {_h(ov.get('p99_ms'))}ms"
+            f" · 吞吐 {_h(ov.get('rps'))} rps</div>"
+        )
+
+    # ---- 安全表 ----
+    checks = sec.get("checks") or []
+    if not sec.get("enabled"):
+        sec_html = "<div class='reg-empty'>本次未执行安全冒烟。</div>"
+    elif not checks:
+        sec_html = f"<div class='ps-note warn'>未执行：{_h(sec.get('reason', ''))}</div>"
+    else:
+        rows = "".join(
+            f"<tr class='{('ok' if c.get('status') == 'PASS' else ('skip' if c.get('status') == 'SKIP' else 'bad'))}'>"
+            f"<td class='name'>{_h(c.get('name'))}</td>"
+            f"<td class='method'>{_h(c.get('category'))}</td>"
+            f"<td class='result'>{_ps_result_badge(c.get('status'))}</td>"
+            f"<td class='expect' title='{_h(c.get('evidence'))}'>{_h(c.get('detail'))}</td></tr>"
+            for c in checks
+        )
+        sec_html = (
+            f"<div class='ps-sub'>通过 {_h(sec.get('passed_count'))} · 失败 {_h(sec.get('failed'))}"
+            f" · 提示 {_h(sec.get('warned'))} · 跳过 {_h(sec.get('skipped'))}</div>"
+            "<div class='table-wrap'><table class='reg-table'>"
+            "<thead><tr><th>检查项</th><th>类别</th><th>状态</th><th>说明</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table></div>"
+        )
+
+    baseline = pf.get("baseline") or {}
+    base_html = ""
+    if baseline and not baseline.get("ok"):
+        base_html = (f"<div class='ps-note bad'>基线未通过：{_h(baseline.get('reason', ''))}"
+                     "（此状态下结果不计为安全缺陷，但门禁按未通过处理）</div>")
+    _stale = pf.get("stale_sections") or []
+    if _stale:
+        _names = "、".join({"perf": "性能", "security": "安全"}.get(k, k) for k in _stale)
+        _when = pf.get("perf_from_previous") or pf.get("security_from_previous") or ""
+        base_html += (f"<div class='ps-note warn'>说明：{_h(_names)}为上次结果（{_h(_when)}），"
+                      "本次只重跑了另一侧；门禁按两侧合并判定。</div>")
+
+    return (
+        "<div class='card'>"
+        f"<div class='card-title'>性能与安全冒烟 {gate}"
+        f"<span class='count'>{_h(bloom)}</span></div>"
+        f"{base_html}"
+        f"<div class='ps-sub'>时间：{_h(pf.get('generated_at'))} · 环境：<code>{_h(pf.get('base_url'))}</code></div>"
+        f"<div class='ps-h'>性能指标</div>{perf_html}"
+        f"<div class='ps-h'>安全检查</div>{sec_html}"
+        "</div>"
+    )
+
+
 def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, Any]) -> Path:
     out = pdir / "artifacts" / "report.html"
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -560,12 +736,24 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
             f"<tbody>{rows}</tbody></table></div>"
         )
     else:
-        table_html = "<div class='reg-empty'>本次没有可执行的核心回归场景（环境不可达或尚未配置回归项）。</div>"
+        table_html = ("<div class='reg-empty'>尚未执行核心回归。"
+                      "运行 <code>run</code> 或 <code>regression</code> 后此处会展示结果。</div>")
 
     skip_txt = f"，跳过 {reg.get('skipped', 0)}" if reg.get("skipped") else ""
-    all_pass = bool(reg.get("all_pass"))
-    gate_badge = "<span class='gate ok'>全部通过</span>" if all_pass else "<span class='gate bad'>存在失败</span>"
-    gate_desc = "最近一次核心回归符合门禁" if all_pass else "最近一次核心回归未通过门禁"
+    # 三种状态：未执行 / 通过 / 未通过。必须区分"未执行"——否则只跑了性能安全时，
+    # 报告会把空的核心回归渲染成"存在失败"，给出错误的门禁结论。
+    if not results and not reg.get("total"):
+        all_pass = False
+        gate_badge = ("<span class='gate' style='background:var(--warn-soft);"
+                      "color:var(--warn)'>尚未执行</span>")
+        gate_desc = "核心回归尚未执行"
+    else:
+        all_pass = bool(reg.get("all_pass"))
+        gate_badge = ("<span class='gate ok'>全部通过</span>" if all_pass
+                      else "<span class='gate bad'>存在失败</span>")
+        gate_desc = "最近一次核心回归符合门禁" if all_pass else "最近一次核心回归未通过门禁"
+    _sub_reg = (f"核心回归通过 {reg.get('passed')}/{reg.get('total')}{skip_txt}"
+                if (results or reg.get("total")) else "核心回归尚未执行")
 
     # 本次生成方式（可追溯）：模式 + 是否注入了历史易错点 + 需求/用例条数
     _rmeta = _read_run_meta(pdir)
@@ -579,6 +767,18 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
         gen_item = ("<div class='summary-item'><span class='k'>生成模式</span>"
                     f"<span class='v' style='font-size:14px;font-weight:700'>"
                     f"{' · '.join(_parts)}</span></div>")
+
+    # 性能与安全冒烟（执行过才有；门禁独立于核心回归，各自给结论）
+    _pf = _read_perf_security(pdir)
+    ps_item = ""
+    ps_card_html = ""
+    if _pf:
+        _ps_ok = bool(_pf.get("all_pass"))
+        ps_item = ("<div class='summary-item'><span class='k'>性能与安全</span>"
+                   f"<span class='v' style='font-size:15px;font-weight:800;"
+                   f"color:var({'--ok' if _ps_ok else '--bad'})'>"
+                   f"{'通过' if _ps_ok else '未通过'}</span></div>")
+        ps_card_html = _perf_security_card_html(_pf)
 
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -631,6 +831,12 @@ header .subtitle{{font-size:14px;color:var(--muted);}}
 .tag.ok{{background:var(--ok-soft);color:var(--ok);}}
 .tag.bad{{background:var(--bad-soft);color:var(--bad);}}
 .tag.skip{{background:var(--warn-soft);color:var(--warn);}}
+.tag.warn{{background:var(--warn-soft);color:var(--warn);}}
+.ps-h{{font-size:13px;font-weight:800;color:var(--ink);margin:18px 0 10px;padding-left:9px;border-left:3px solid var(--primary);}}
+.ps-sub{{font-size:12px;color:var(--muted);margin:6px 0 10px;line-height:1.7;}}
+.ps-note{{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin:8px 0;line-height:1.6;}}
+.ps-note.warn{{background:var(--warn-soft);color:#92400e;}}
+.ps-note.bad{{background:var(--bad-soft);color:#991b1b;}}
 .cases-meta{{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:18px;}}
 .cases-meta div{{display:flex;align-items:center;gap:8px;}}
 .meta-k{{font-size:12px;color:var(--muted);}}
@@ -677,7 +883,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 <div class='container'>
 <header>
   <h1>项目测试报告 · {pid}</h1>
-  <div class='subtitle'>生成时间：{now} · 核心回归通过 {reg.get('passed')}/{reg.get('total')}{skip_txt}</div>
+  <div class='subtitle'>生成时间：{now} · {_sub_reg}</div>
 </header>
 
 <div class='summary-card'>
@@ -686,6 +892,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   <div class='summary-item'><span class='k'>通过</span><span class='v' style='color:var(--ok)'>{reg.get('passed', 0)}</span></div>
   <div class='summary-item'><span class='k'>失败</span><span class='v' style='color:var(--bad)'>{reg.get('failed', 0)}</span></div>
   {gen_item}
+  {ps_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
 
@@ -693,6 +900,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   <div class='card-title'>核心业务回归结果 <span class='count'>{len(results)}</span></div>
   {table_html}
 </div>
+
+{ps_card_html}
 
 <div class='card'>
   <div class='card-title'>由需求生成的用例（预览） <span class='count'>{cases_count}</span></div>
@@ -770,9 +979,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
                     lessons_injected=bool(inject),
                     requirements=_req_count, cases=_case_count)
+    _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
+                        lessons_injected=bool(inject),
+                        requirements=_req_count, cases=_case_count)
 
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
+
+    # ④ 性能与安全冒烟（--perf 开启）：独立门禁，结论并入 run_meta 便于追溯
+    if getattr(args, "perf", False):
+        pf = _step_perf_security(pdir)
+        _meta_fields["perf_security"] = {"all_pass": bool(pf.get("all_pass")),
+                                         "summary": pf.get("summary", "")}
+        _write_run_meta(pdir, **_meta_fields)
 
     run_store.insert_snapshot(args.id, reg, trigger="run")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
@@ -809,6 +1028,26 @@ def cmd_rerun(args: argparse.Namespace) -> None:
     sys.exit(0 if not reg.get("error") else 1)
 
 
+def cmd_perf_security(args: argparse.Namespace) -> None:
+    """性能 + 安全冒烟（独立子命令）。
+
+    门禁语义与核心回归一致：环境不可达 → 全 SKIP → all_pass=False，退出码 1。
+    """
+    meta = load_project(args.id)
+    pdir = PROJECTS_DIR / args.id
+    base_url = (meta.get("env", {}) or {}).get("base_url", "")
+    label = {"perf": "性能", "security": "安全"}.get(getattr(args, "only", None), "性能与安全")
+    print(f"== {label}冒烟：{args.id}（环境 {base_url}）==")
+    res = _step_perf_security(pdir,
+                             users=getattr(args, "users", None),
+                             iterations=getattr(args, "iterations", None),
+                             only=getattr(args, "only", None))
+    # 同步刷新报告，让「性能与安全」卡片立即可见（核心回归可能尚未跑过，报告会标注"尚未执行"）
+    cases = pdir / "artifacts" / "cases.md"
+    _step_report(args.id, pdir, cases if cases.is_file() else None, _read_regression(pdir))
+    sys.exit(0 if res.get("all_pass") else 1)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """跨项目总览看板：汇总各项目最近一次核心回归结果，作为交付质量门禁。"""
     pdirs = load_projects()
@@ -832,6 +1071,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             "owner": meta.get("owner", ""),
             "base_url": (meta.get("env", {}) or {}).get("base_url", ""),
             "reg": reg,
+            "ps": _read_perf_security(pdir),   # ④ 性能与安全冒烟（可能未执行）
         })
 
     print(f"== 跨项目总览（{len(rows)} 个项目）==")
@@ -844,6 +1084,14 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             print(f"  - {r['pid']:<16}{r['name']:<22}"
                   f"通过 {reg.get('passed', 0)}/{reg.get('total', 0)}"
                   f"（跳过 {reg.get('skipped', 0)}）  {gate}")
+        ps = r.get("ps")
+        if ps:
+            pg = "✅ 通过" if ps.get("all_pass") else "❌ 未通过"
+            perf = ps.get("perf") or {}
+            ov = perf.get("overall") or {}
+            extra = (f" · P95 {ov.get('p95_ms')}ms / 错误率 "
+                     f"{float(ov.get('error_rate') or 0) * 100:.2f}%" if ov else "")
+            print(f"  {'':<16}{'':<22}性能与安全：{pg}{extra}")
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     trs = []
@@ -857,11 +1105,24 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             badge = "通过 ✅" if reg.get("all_pass") else "未通过 ❌"
             detail = (f"通过 {reg.get('passed', 0)}/{reg.get('total', 0)}"
                       f"（跳过 {reg.get('skipped', 0)}）")
+        ps = r.get("ps")
+        if not ps:
+            ps_detail, ps_badge = "<span class='muted'>未执行</span>", "<span class='muted'>—</span>"
+        else:
+            _pok = bool(ps.get("all_pass"))
+            ps_badge = "通过 ✅" if _pok else "未通过 ❌"
+            _pov = (ps.get("perf") or {}).get("overall") or {}
+            _s = ps.get("security") or {}
+            ps_detail = (f"P95 {_pov.get('p95_ms', 0)}ms · 错误率 "
+                         f"{float(_pov.get('error_rate') or 0) * 100:.2f}% · "
+                         f"安全 {_s.get('passed_count', 0)}通过/{_s.get('failed', 0)}失败"
+                         + (f"/{_s.get('warned')}提示" if _s.get("warned") else ""))
         trs.append(
             f"<tr class='{cls}'><td><b>{_h(r['pid'])}</b></td>"
             f"<td>{_h(r['name'])}</td><td>{_h(r['owner'])}</td>"
             f"<td><code>{_h(r['base_url'])}</code></td>"
-            f"<td>{detail}</td><td>{badge}</td>"
+            f"<td>{detail}</td><td class='gate-cell'>{badge}</td>"
+            f"<td>{ps_detail}</td><td class='gate-cell'>{ps_badge}</td>"
             f"<td><a href='projects/{_h(r['pid'])}/artifacts/report.html'>项目报告</a></td></tr>"
         )
 
@@ -875,14 +1136,15 @@ th{{background:#f3f4f6;}}
 tr.ok td:nth-child(6){{color:#047857;font-weight:600;}}
 tr.bad td:nth-child(6){{color:#b91c1c;font-weight:600;}}
 tr.skip td:nth-child(6){{color:#b45309;font-weight:600;}}
+td.gate-cell{{font-weight:700;white-space:nowrap;}}
 .muted{{color:#9ca3af;}}</style>
 </head><body>
 <h1>跨项目测试总览</h1>
-<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归</div>
-<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>门禁</th><th>明细</th></tr>
+<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟</div>
+<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>明细</th></tr>
 {''.join(trs)}
 </table>
-<div class='meta'>重新生成：python project_manager.py dashboard</div>
+<div class='meta'>重新生成：python project_manager.py dashboard · 性能与安全冒烟：python project_manager.py perf-security &lt;项目ID&gt;</div>
 </body></html>"""
     out = ROOT / "projects_dashboard.html"
     out.write_text(html_doc, encoding="utf-8")
@@ -970,7 +1232,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="需求→用例采用 LLM 增强（需 LLM_API_KEY；失败自动降级规则版）")
     r.add_argument("--agentic", action="store_true",
                    help="LLM 增强启用智能体多步自审编排（分析→初版→自评审→终版，质量更高但 4 次调用）；需配合 --llm")
+    r.add_argument("--perf", action="store_true",
+                   help="追加 ④ 性能与安全冒烟（并发延迟 + 鉴权/注入/泄露/配置检查）")
     r.set_defaults(func=cmd_run)
+
+    ps = sub.add_parser("perf-security", help="④ 性能与安全冒烟（独立于核心回归）")
+    ps.add_argument("id")
+    ps.add_argument("--only", choices=["perf", "security"], help="只跑其中一项")
+    ps.add_argument("--users", type=int, help="并发数（覆盖 project.yaml 中的配置）")
+    ps.add_argument("--iterations", type=int, help="每用户请求次数（覆盖配置）")
+    ps.set_defaults(func=cmd_perf_security)
 
     g = sub.add_parser("regression", help="仅核心业务回归")
     g.add_argument("id")
