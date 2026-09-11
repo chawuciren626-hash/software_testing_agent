@@ -167,7 +167,30 @@ export APP_PASSWORD="macro123"
 > 否则历史里最新一条就是本次自己，自己跟自己比，结论永远是"没有新增失败"。
 > 这条由 `tests/test_trend_diff.py::test_diff_against_self_would_hide_everything` 钉死。
 
-### 5.4 上层智能体（需 LLM key）
+#### 长期记忆：项目知识库（`knowledge.py` · 人工维护）
+
+需求文档通常不会写"密码 8-20 位""列表默认分页 10 条"这类约定，但不知道它们就会写出错误的边界用例。
+`projects/<id>/knowledge.md` 就是用来落这些约定的，由**人工维护**（与自动生成的 `lessons.md` 互补）：
+
+|            | `lessons.md`            | `knowledge.md`                  |
+|---|---|---|
+| 来源 | 流水线自动聚类失败项 | **人工撰写**（控制台可直接编辑） |
+| 时效 | 短期：最近失败的反映 | 长期：业务取值与领域约定 |
+| 回答的问题 | "哪些场景容易红" | "这个项目的取值约定是什么" |
+
+每次生成用例时，会按**关键词重合度**挑出与本次需求相关的 Top-K 段一起注入
+（`top_k=3`，且段落分数低于最高分 30% 的会被丢弃 —— 宁可少给，不能给错）。
+
+```bash
+.venv/Scripts/python extensions/memory/knowledge.py projects/mall-admin --query "管理员登录"
+```
+
+> ⚠️ 检索是**关键词 / 子串匹配**（中文 2-gram），**不是语义向量检索**：
+> 它认得出"密码"和"密码"，认不出"登录凭证"和"用户名密码"是同一件事。
+> 想让某段被捡到，把核心词写进**标题**。控制台「项目知识」页会显示命中了哪些词，
+> 写没写对一眼就能看出来。不确定时**不注入**，不拿无关段落凑数。
+
+### 5.4 上层智能体（需 LLM key））
 在 `.env` 填入 `ANTHROPIC_API_KEY` 或 `GOOGLE_API_KEY`，然后：
 ```bash
 agent-explorer --missions missions/new_user_agent.yaml --headed

@@ -246,6 +246,9 @@ EDITABLE_FILES = {
     "requirements": "requirements.md",
     "regression": "regression.yaml",
     "web": "web.yaml",
+    # knowledge.md 是**人工维护**的长期记忆，本来就该能在控制台里写，
+    # 不能改就意味着用户得去翻磁盘文件 —— 那它很快就再也无人更新。
+    "knowledge": "knowledge.md",
 }
 
 
@@ -305,6 +308,34 @@ def api_project_lessons(pid: str) -> Any:
     lp = pdir / "lessons.md"
     content = lp.read_text(encoding="utf-8") if lp.is_file() else ""
     return jsonify({"ok": True, "has": bool(content), "content": content})
+
+
+@app.get("/api/projects/<pid>/knowledge")
+def api_project_knowledge(pid: str) -> Any:
+    """项目知识库（S2 长期记忆，人工维护）：内容 + **本次会命中哪些段落**。
+
+    为什么把检索解释一起回传：写好了 knowledge.md 却不知道它有没有被用上，
+    是最容易让人放弃维护它的情况。把命中词摆在界面上，用户立刻能判断
+    "该在标题里多写几个核心词"，而不是靠猜。
+    """
+    pdir = pm.PROJECTS_DIR / pid
+    if not (pdir / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+    import knowledge as kn  # noqa: E402
+
+    content = kn.load_knowledge(pdir) or ""
+    if not content.strip():
+        return jsonify({"ok": True, "has": False, "content": "",
+                        "template": kn.TEMPLATE, "picked": [],
+                        "total_sections": 0, "query_terms": [],
+                        "reason": f"尚无 {kn.KNOWLEDGE_FILE}（可直接在控制台填写）"})
+    rf = pdir / "requirements.md"
+    req_text = rf.read_text(encoding="utf-8") if rf.is_file() else ""
+    info = kn.explain(pdir, req_text)
+    info.update({"ok": True, "has": True, "content": content, "template": "",
+                 "reason": ""})
+    return jsonify(info)
 
 
 @app.get("/api/projects/<pid>/quality")

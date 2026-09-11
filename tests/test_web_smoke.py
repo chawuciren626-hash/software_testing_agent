@@ -828,3 +828,79 @@ def test_index_has_diff_tab_and_badge():
     assert "d_diff" in html
     assert "renderDiffPanel" in html
     assert "新增失败" in html
+
+
+# ---------- 长期记忆：项目知识（人工维护） ----------
+
+_KNOWLEDGE_MD = """# 项目知识（人工维护）
+
+## 管理员登录
+密码长度要求 8-20 位。登录失败返回 code=500，HTTP 状态码恒为 200。
+
+## 用户列表分页
+列表接口默认 pageSize=10。
+"""
+
+
+def test_knowledge_api_without_file(monkeypatch, tmp_path):
+    """没写过 → has=False 并回传模板（否则用户不知道从哪下笔）。"""
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/knowledge").get_json()
+    assert d["ok"] is True and d["has"] is False
+    assert d["picked"] == [] and d["template"], "应回传模板供界面填充"
+
+
+def test_knowledge_api_reports_what_would_be_picked(monkeypatch, tmp_path):
+    """回传命中情况：用户得知道写了的内容到底有没有被用上。"""
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "knowledge.md").write_text(_KNOWLEDGE_MD, encoding="utf-8")
+    (proj / "requirements.md").write_text("管理员可以使用密码登录系统", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/knowledge").get_json()
+    assert d["ok"] is True and d["has"] is True
+    assert d["total_sections"] == 2
+    assert d["picked"], "与需求相关的段落应被拾取"
+    assert d["picked"][0]["title"] == "管理员登录"
+    assert d["picked"][0]["hits"], "要能看到命中词，否则无法解释"
+
+
+def test_knowledge_api_unrelated_requirement_picks_nothing(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "knowledge.md").write_text(_KNOWLEDGE_MD, encoding="utf-8")
+    (proj / "requirements.md").write_text("导出年度财务报表 Excel", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/knowledge").get_json()
+    assert d["picked"] == [], "无关键词共现时不该硬塞无关段落"
+
+
+def test_knowledge_api_unknown_project(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.get("/api/projects/nope/knowledge").status_code == 404
+
+
+def test_files_api_exposes_knowledge(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "knowledge.md").write_text(_KNOWLEDGE_MD, encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert "管理员登录" in (d["files"]["knowledge"] or "")
+
+
+def test_files_api_can_save_knowledge(monkeypatch, tmp_path):
+    """knowledge.md 是人工维护的，必须能在控制台里写 —— 不能改就没人会更新它。"""
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.post("/api/projects/demo/files", json={"knowledge": "## 约定\n金额单位为分"})
+    assert r.get_json()["ok"] is True
+    assert "knowledge.md" in r.get_json()["saved"]
+    assert "金额单位为分" in (proj / "knowledge.md").read_text(encoding="utf-8")
+
+
+def test_index_has_knowledge_tab_and_hooks():
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-tab="knowledge"' in html
+    assert "d_knowledge" in html
+    assert "renderKnowledgeInfo" in html
+    # 跑全流程前的落盘必须带上 knowledge，否则"改了没效果"
+    assert "d_knowledge').value" in html

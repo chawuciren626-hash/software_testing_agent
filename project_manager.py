@@ -343,6 +343,15 @@ def cmd_create(args: argparse.Namespace) -> None:
     (pdir / "web.yaml").write_text(
         WEB_YAML_TMPL.replace("{pid}", pid), encoding="utf-8",
     )
+    # 长期记忆：项目知识库模板（人工维护的业务取值约定）。
+    # 走 ensure_template 而非直接 write —— 已存在时绝不覆盖用户写的内容。
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+        import knowledge as kn  # noqa: E402
+        if kn.ensure_template(pdir):
+            print(f"  已生成知识库模板 -> {pdir / 'knowledge.md'}（可选，写了才生效）")
+    except Exception:
+        pass
     (pdir / "artifacts").mkdir(exist_ok=True)
     print(f"\n✅ 项目 {pid} 已创建：{pdir}")
     print("   下一步：")
@@ -1526,11 +1535,36 @@ def cmd_run(args: argparse.Namespace) -> None:
     # P2 情景记忆：读历史易错点注入需求→用例；run 之后写快照并重建 lessons.md
     sys.path.insert(0, str(ROOT / "extensions" / "memory"))
     import lessons as ls  # noqa: E402
+    import knowledge as kn  # noqa: E402
     run_store = _load_run_store()
     run_store.init_db(ROOT / "runs.db")
     inject = ls.to_inject_prompt(pdir)
-    if inject:
+    ls_injected = inject        # 单独留存：run_meta 要能区分两类记忆各自有没有注入
+    # 两类记忆互补，不要合并成一个概念：
+    #   lessons.md   = 流水线自动生成，短期，回答"哪些场景容易红"
+    #   knowledge.md = 人工维护，长期，回答"这个项目的取值约定是什么"
+    _req_text = ""
+    try:
+        _rf = pdir / "requirements.md"
+        if _rf.is_file():
+            _req_text = _rf.read_text(encoding="utf-8")
+    except Exception:
+        _req_text = ""
+    kinject = kn.to_inject_prompt(pdir, _req_text)
+    if kinject:
+        kpicked = kn.explain(pdir, _req_text)["picked"]
+        k_titles = "、".join(p["title"] or "(无标题)" for p in kpicked)
+        print(f"  [长期记忆] 从项目知识库拾取 {len(kpicked)} 段注入：{k_titles}")
+        inject = ((inject or "") + "\n\n" + kinject).strip() if inject else kinject
+
+    # 两类记忆合成一段，统一交给需求→用例；提示要能说清各自有没有生效，
+    # 否则"注入了但没效果"时无从判断是没检索到还是模型没采纳。
+    if ls_injected and kinject:
+        print(f"  [记忆注入] 情景记忆 + 项目知识均已注入（共 {len(inject)} 字符）")
+    elif ls_injected:
         print(f"  [情景记忆] 检测到历史易错点，已注入需求→用例生成（{len(inject)} 字符）")
+    elif kinject:
+        print(f"  [长期记忆] 已注入与本次需求相关的项目知识（{len(inject)} 字符）")
 
     use_llm = bool(getattr(args, "llm", False))
     use_agentic = bool(getattr(args, "agentic", False))
@@ -1555,10 +1589,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     except Exception:
         _req_count = 0
     _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
-                    lessons_injected=bool(inject),
+                    lessons_injected=bool(ls_injected),
+                    knowledge_injected=bool(kinject),
                     requirements=_req_count, cases=_case_count)
     _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
-                        lessons_injected=bool(inject),
+                        lessons_injected=bool(ls_injected),
+                        knowledge_injected=bool(kinject),
                         requirements=_req_count, cases=_case_count)
 
     # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），

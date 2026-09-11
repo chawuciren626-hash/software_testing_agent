@@ -218,3 +218,47 @@ def test_diff_tab_renders_without_js_errors(console_url, browser_session):
         assert not errors, "新旧对比页面有 JS 报错：" + " | ".join(errors[:3])
     finally:
         page.close()
+
+
+@needs_browser
+def test_knowledge_tab_editable_and_renders(console_url, browser_session):
+    """「项目知识」页必须 ① 编辑器可改（这是人工维护的文件）② 命中面板真的渲染。
+
+    只断言 HTML 里有 renderKnowledgeInfo 不够 —— 函数体里一个 undefined
+    照样让面板空白，而字符串检查照样通过。
+    """
+    page = browser_session.new_page(viewport={"width": 1500, "height": 1000})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    page.on("console", lambda m: errors.append(f"console.error: {m.text}")
+            if m.type == "error" else None)
+    try:
+        page.goto(console_url, wait_until="networkidle")
+        page.evaluate("switchTab('knowledge')")
+        page.wait_for_timeout(300)
+
+        # 编辑器必须可编辑（knowledge.md 是人工维护的，只读就没法维护了）
+        editable = page.evaluate(
+            "() => !document.getElementById('d_knowledge').readOnly")
+        assert editable, "项目知识编辑器被设成了只读"
+
+        page.evaluate("""() => renderKnowledgeInfo({
+            ok: true, has: true, content: '## 登录约定：密码 8-20 位',
+            total_sections: 2,
+            picked: [{title: '管理员登录', score: 9, hits: ['密码','登录']}]})""")
+        html = page.locator("#d_kinfo").inner_html()
+        assert "管理员登录" in html, "命中段落没渲染出来"
+        assert "密码" in html, "命中词没显示（无法解释为何选中）"
+        assert "关键词" in html, "缺少「不是语义检索」的诚实说明"
+
+        # 无数据：给引导文案 + 模板，而不是空白
+        page.evaluate("() => renderKnowledgeInfo({ok: true, has: false, "
+                      "content: '', template: '## 示例'})")
+        empty = page.locator("#d_kinfo").inner_html()
+        assert "尚未填写" in empty, "无数据时没有引导"
+        assert page.evaluate(
+            "() => document.getElementById('d_knowledge').value") == "## 示例"
+
+        assert not errors, "项目知识页有 JS 报错：" + " | ".join(errors[:3])
+    finally:
+        page.close()

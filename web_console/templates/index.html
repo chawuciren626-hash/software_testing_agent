@@ -322,7 +322,7 @@ svg{display:block;}
 .ps-sel,.ps-num{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;}
 .ps-num{width:66px;}
 /* 详情弹窗里的编辑区（需求/回归/用例/记忆/Web 场景）：统一成设计系统里的等宽文本域 */
-#d_requirements,#d_regression,#d_cases,#d_lessons,#d_webyaml{width:100%;box-sizing:border-box;
+#d_requirements,#d_regression,#d_cases,#d_lessons,#d_webyaml,#d_knowledge{width:100%;box-sizing:border-box;
   border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--panel);
   color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.75;outline:none;
   resize:vertical;min-height:280px;max-height:46vh;transition:border-color .15s,box-shadow .15s;}
@@ -581,6 +581,7 @@ svg{display:block;}
       <button class="btn tab sm" data-tab="quality" onclick="switchTab('quality')">用例质量</button>
       <button class="btn tab sm" data-tab="defects" onclick="switchTab('defects')">缺陷草稿</button>
       <button class="btn tab sm" data-tab="diff" onclick="switchTab('diff')">新旧对比</button>
+      <button class="btn tab sm" data-tab="knowledge" onclick="switchTab('knowledge')">项目知识</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
@@ -591,6 +592,8 @@ svg{display:block;}
     <div id="d_quality" class="ps-panel" style="display:none"></div>
     <textarea id="d_defects" class="mono" style="display:none" readonly></textarea>
     <div id="d_diff" class="ps-panel" style="display:none"></div>
+    <div id="d_kinfo" class="ps-panel" style="display:none"></div>
+    <textarea id="d_knowledge" class="mono" style="display:none"></textarea>
     <textarea id="d_webyaml" class="mono" style="display:none"></textarea>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
@@ -1016,7 +1019,10 @@ async function runPipelineFromDetail(){
     await fetch(`/api/projects/${detailPid}/files`,{method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({requirements:document.getElementById('d_requirements').value,
-                           regression:document.getElementById('d_regression').value})});
+                           regression:document.getElementById('d_regression').value,
+                           // ⚠️ 知识也要一并落盘：否则用户刚在详情页改好的项目知识
+                           //    不会进入这次 run —— 表现为"改了没效果"，极难察觉。
+                           knowledge:document.getElementById('d_knowledge').value})});
   }catch(e){}
   const useAgentic=!!(document.getElementById('cbAgentic')&&document.getElementById('cbAgentic').checked);
   const useLlm=useAgentic||!!(document.getElementById('cbLlm')&&document.getElementById('cbLlm').checked);
@@ -1881,6 +1887,14 @@ async function openDetail(pid){
   renderPerfSecPanel(d.perf_security||null);
   // ⑤ Web UI 冒烟结果（可能未执行 → 面板给出引导）
   renderWebPanel(d.web||null);
+  // 项目知识（长期记忆）：先用 files 里的文本填充编辑器，再用专用端点算出命中情况
+  document.getElementById('d_knowledge').value=d.files.knowledge||'';
+  fetch(`/api/projects/${encodeURIComponent(pid)}/knowledge`).then(r=>r.json())
+    .then(kd=>renderKnowledgeInfo(kd)).catch(()=>renderKnowledgeInfo({ok:true,has:false}));
+  // 项目知识（长期记忆）：先用 files 里的文本填充编辑器，再用专用端点算出命中情况
+  document.getElementById('d_knowledge').value=d.files.knowledge||'';
+  fetch(`/api/projects/${encodeURIComponent(pid)}/knowledge`).then(r=>r.json())
+    .then(kd=>renderKnowledgeInfo(kd)).catch(()=>renderKnowledgeInfo({ok:true,has:false}));
   // 用例结构质量分：先用 files 里的数据立刻渲染，再用专用端点补全维度文案与文本摘要
   renderQualityPanel(null, d.quality||null);
   fetch(`/api/projects/${encodeURIComponent(pid)}/quality`).then(r=>r.json())
@@ -1901,13 +1915,100 @@ async function openDetail(pid){
   switchTab('requirements');
   document.getElementById('detailMask').classList.add('show');
 }
+/* 项目知识（长期记忆）：展示本次需求的命中情况。
+
+   这个面板存在的理由：写了 knowledge.md 却不知道有没有被用上，是最容易让人
+   放弃维护它的情况。把「命中了哪段、因为哪个词命中」摆出来，用户就能判断
+   该怎么写标题，而不是靠猜。顺便也把「关键词匹配不是语义检索」讲清楚。 */
+function renderKnowledgeInfo(d){
+  const box=document.getElementById('d_kinfo');
+  if(!box) return;
+  if(!d || !d.ok){
+    box.innerHTML='<div class="ps-empty">读取项目知识失败。请刷新重试。</div>';
+    return;
+  }
+  const editor=document.getElementById('d_knowledge');
+  if(editor) editor.value=(d.content||d.template||'');
+  if(!d.has){
+    box.innerHTML='<div class="ps-empty">尚未填写项目知识。<br>'+
+      '下面示例可以直接补：写项目特有的取值约定（如"密码 8-20 位"）'+
+      '——需求文档里通常不会写，但不知道就会写出不对的边界用例。</div>'+
+      '<div class="ps-sub">填写后，每次生成用例会自动捡出与本次需求相关的段落一起交给模型。'+
+      '留空不影响其它功能。</div>';
+    return;
+  }
+  const picked=d.picked||[];
+  const rows=picked.map(x=>
+    '<tr><td><strong>'+esc(x.title||'(无标题)')+'</strong></td>'+
+    '<td class="mono">'+Number(x.score||0)+'</td>'+
+    '<td class="q-hint">'+esc((x.hits||[]).join('、')||'—')+'</td></tr>').join('');
+  const body=picked.length
+    ? '<div class="ps-head ok"><span class="ps-verdict">'+picked.length+'</span>'+
+      '<span class="ps-sum">本次需求会从 '+Number(d.total_sections||0)+' 段知识中 '+
+      '捡出 '+picked.length+' 段一起注入</span></div>'+
+      '<div class="ps-scroll"><table class="ps-tbl">'+
+      '<tr><th>段落</th><th>相关度</th><th>命中词</th></tr>'+rows+'</table></div>'
+    : '<div class="ps-head warn"><span class="ps-verdict">0</span>'+
+      '<span class="ps-sum">本次需求与现有 '+Number(d.total_sections||0)+
+      ' 段知识没有共现关键词，本次不注入</span></div>';
+  box.innerHTML=body+
+    '<div class="ps-warn">检索是<strong>关键词 / 子串匹配</strong>，不是语义理解：'+
+    '它认得出"密码"和"密码"，认不出"登录凭证"和"用户名密码"是同一件事。'+
+    '想让某段被捡到，就把它的核心词写进<strong>标题</strong>里。</div>';
+}
+
+/* 项目知识（长期记忆）：展示本次需求的命中情况。
+
+   这个面板存在的理由：写了 knowledge.md 却不知道有没有被用上，是最容易让人
+   放弃维护它的情况。把「命中了哪段、因为哪个词命中」摆出来，用户就能判断
+   该怎么写标题，而不是靠猜。顺便也把「关键词匹配不是语义检索」讲清楚。 */
+function renderKnowledgeInfo(d){
+  const box=document.getElementById('d_kinfo');
+  if(!box) return;
+  if(!d || !d.ok){
+    box.innerHTML='<div class="ps-empty">读取项目知识失败。请刷新重试。</div>';
+    return;
+  }
+  const editor=document.getElementById('d_knowledge');
+  if(editor) editor.value=(d.content||d.template||'');
+  if(!d.has){
+    box.innerHTML='<div class="ps-empty">尚未填写项目知识。<br>'+
+      '下面示例可以直接补：写项目特有的取值约定（如"密码 8-20 位"）'+
+      '——需求文档里通常不会写，但不知道就会写出不对的边界用例。</div>'+
+      '<div class="ps-sub">填写后，每次生成用例会自动捡出与本次需求相关的段落一起交给模型。'+
+      '留空不影响其它功能。</div>';
+    return;
+  }
+  const picked=d.picked||[];
+  const rows=picked.map(x=>
+    '<tr><td><strong>'+esc(x.title||'(无标题)')+'</strong></td>'+
+    '<td class="mono">'+Number(x.score||0)+'</td>'+
+    '<td class="q-hint">'+esc((x.hits||[]).join('、')||'—')+'</td></tr>').join('');
+  const body=picked.length
+    ? '<div class="ps-head ok"><span class="ps-verdict">'+picked.length+'</span>'+
+      '<span class="ps-sum">本次需求会从 '+Number(d.total_sections||0)+' 段知识中 '+
+      '捡出 '+picked.length+' 段一起注入</span></div>'+
+      '<div class="ps-scroll"><table class="ps-tbl">'+
+      '<tr><th>段落</th><th>相关度</th><th>命中词</th></tr>'+rows+'</table></div>'
+    : '<div class="ps-head warn"><span class="ps-verdict">0</span>'+
+      '<span class="ps-sum">本次需求与现有 '+Number(d.total_sections||0)+
+      ' 段知识没有共现关键词，本次不注入</span></div>';
+  box.innerHTML=body+
+    '<div class="ps-warn">检索是<strong>关键词 / 子串匹配</strong>，不是语义理解：'+
+    '它认得出"密码"和"密码"，认不出"登录凭证"和"用户名密码"是同一件事。'+
+    '想让某段被捡到，就把它的核心词写进<strong>标题</strong>里。</div>';
+}
+
 function switchTab(tab){
-  ['requirements','regression','cases','lessons','perfsec','web','quality','defects','diff'].forEach(t=>{
+  ['requirements','regression','cases','lessons','perfsec','web','quality','defects','diff','knowledge'].forEach(t=>{
     const el=document.getElementById('d_'+t);
     el.style.display = t===tab ? (t==='perfsec'?'block':'block') : 'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
     if(b)b.classList.toggle('active',t===tab);
   });
+  // 「项目知识」页要同时显示编辑框和上方的命中解释面板
+  const kinf=document.getElementById('d_kinfo');
+  if(kinf) kinf.style.display = tab==='knowledge' ? 'block' : 'none';
   // web.yaml 编辑器只跟随 Web 冒烟页显示
   const wy=document.getElementById('d_webyaml');
   if(wy) wy.style.display = tab==='web' ? 'block' : 'none';
@@ -2209,6 +2310,8 @@ async function saveFiles(){
   const body={requirements:document.getElementById('d_requirements').value,
               regression:document.getElementById('d_regression').value};
   const yv=webYamlValue(); if(yv) body.web=yv;   // 只在编辑过（非占位）时保存 web.yaml
+  const kEl=document.getElementById('d_knowledge');
+  if(kEl) body.knowledge=kEl.value;              // 项目知识（长期记忆）同样在这里保存
   const r=await fetch(`/api/projects/${detailPid}/files`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();
   btn.disabled=false; btn.textContent='保存需求与配置';
