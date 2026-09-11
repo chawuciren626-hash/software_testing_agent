@@ -456,3 +456,11 @@ def test_report_includes_quality_card(tmp_path, monkeypatch):
                                               "passed": 0, "failed": 0, "skipped": 0})
     html = out.read_text(encoding="utf-8")
     assert "用例结构质量分" in html and "用例结构分" in html
+
+
+def test_run_parser_has_optional_quality_min():
+    """--quality-min 必须存在且默认关闭（结构分只做趋势，默认卡就是鼓励刷分）。"""
+    args = pm.build_parser().parse_args(["run", "demo"])
+    assert getattr(args, "quality_min", None) is None
+    args2 = pm.build_parser().parse_args(["run", "demo", "--quality-min", "80"])
+    assert args2.quality_min == 80

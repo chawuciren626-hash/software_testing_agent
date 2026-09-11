@@ -1331,13 +1331,26 @@ def cmd_run(args: argparse.Namespace) -> None:
                         requirements=_req_count, cases=_case_count)
 
     # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），
-    # 落盘后供报告/看板/控制台读；分数不参与门禁，只看趋势。
+    # 落盘后供报告/看板/控制台读。默认**只展示与看趋势、不做门禁**；
+    # 只有显式传了 --quality-min 才按未达标处理（且放到最后判定，先把报告生成出来）。
+    _qmin = getattr(args, "quality_min", None)
+    _qfail: Optional[Tuple[Any, int, str]] = None   # (实际分, 阈值, 说明)
     if cases and Path(cases).is_file():
         try:
+            sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+            import case_quality as _cq  # noqa: E402
             _q = _step_quality(pdir, Path(cases).read_text(encoding="utf-8"),
                                requirement_count=_req_count or None, mode=_mode)
             if _q and _q.get("total") is not None:
                 _meta_fields["quality"] = _q["total"]
+            if _qmin is not None:
+                # 算不出分数时 check_min 判**不达标** —— 把"没算出来"当"达到要求"是假绿
+                _qok, _qmsg = _cq.check_min(_q or {"total": None}, _qmin)
+                _meta_fields["quality_gate"] = {"min": int(_qmin),
+                                                "total": (_q or {}).get("total"),
+                                                "passed": bool(_qok)}
+                if not _qok:
+                    _qfail = ((_q or {}).get("total"), int(_qmin), _qmsg)
                 _write_run_meta(pdir, **_meta_fields)
         except Exception as e:  # 打分失败绝不能拖垮主流程
             print(f"  [质量分] 计算失败（不影响流程）：{e}", file=sys.stderr)
@@ -1372,6 +1385,14 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     _step_report(args.id, pdir, cases, reg)
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
+
+    # 可选质量门禁（--quality-min）：放在报告之后判定，保证失败时也有报告可查。
+    if _qfail:
+        got, need, why = _qfail
+        raise SystemExit(
+            f"\n❌ 用例结构质量分未达标：{why}（--quality-min {need}；实际 {got}）。\n"
+            f"   注意：结构分只反映形式完整性，未达标不代表用例一定有问题，"
+            f"请先人工看一眼报告里的用例再决定是否调整阈值。")
 
 
 def cmd_regression(args: argparse.Namespace) -> None:
@@ -1673,6 +1694,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="追加 ④ 性能与安全冒烟（并发延迟 + 鉴权/注入/泄露/配置检查）")
     r.add_argument("--web", action="store_true",
                    help="追加 ⑤ Web UI 冒烟（Playwright 声明式场景，需项目下存在 web.yaml）")
+    r.add_argument("--quality-min", type=int, default=None, metavar="N",
+                   help="【可选，默认不启用】用例结构质量分低于 N 时按失败退出（非 0）。"
+                        "默认不卡：结构分是形式检查，可以注水刷高，作为默认门禁会鼓励刷分；"
+                        "需要防「生成环节退化」的场景再显式开启")
     r.set_defaults(func=cmd_run)
 
     ps = sub.add_parser("perf-security", help="④ 性能与安全冒烟（独立于核心回归）")

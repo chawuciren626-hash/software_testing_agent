@@ -238,3 +238,22 @@ def test_write_quality_alone_does_not_invent_delta(tmp_path):
 
 def test_read_quality_missing_returns_none(tmp_path):
     assert cq.read_quality(tmp_path / "nope") is None
+
+
+# ---------- 可选阈值（默认不启用） ----------
+
+def test_check_min_disabled_by_default():
+    """不传阈值 → 永远达标（默认不卡，避免鼓励刷分）。"""
+    assert cq.check_min({"total": 1}, None) == (True, "")
+
+
+def test_check_min_pass_and_fail():
+    assert cq.check_min({"total": 95}, 90)[0] is True
+    ok, msg = cq.check_min({"total": 95}, 99)
+    assert ok is False and "95 < 99" in msg
+
+
+def test_check_min_unscored_is_not_passed():
+    """算不出分数时不能算达标 —— 把"没算出来"当"达到要求"就是假绿。"""
+    ok, msg = cq.check_min({"total": None}, 90)
+    assert ok is False and "无法计分" in msg

@@ -268,6 +268,22 @@ def score_cases_md(md_text: str, requirement_count: Optional[int] = None) -> Dic
     return score_rows(parse_rows(md_text), requirement_count=requirement_count)
 
 
+def check_min(result: Dict[str, Any], min_score: Optional[int]) -> Tuple[bool, str]:
+    """可选阈值判定（默认不启用）：返回 ``(是否达标, 说明)``。
+
+    **算不出分数时不判达标** —— 把"没算出来"当"达到要求"是典型的假绿，
+    和"环境不可达不判绿"是同一条原则。
+    """
+    if min_score is None:
+        return True, ""
+    total = result.get("total")
+    if total is None:
+        return False, "无法计分，不能按达标处理（请先看报告确认用例是否真的生成了）"
+    if int(total) < int(min_score):
+        return False, f"结构质量分 {total} < {min_score}"
+    return True, f"结构质量分 {total} ≥ {min_score}"
+
+
 def _pct(x: float) -> int:
     """比例 → 0-100 整数（夹紧，避免浮点越界）。"""
     return int(round(max(0.0, min(1.0, x)) * 100))
@@ -432,12 +448,19 @@ def main() -> None:
     ap.add_argument("cases", help="cases.md 路径")
     ap.add_argument("--requirements", "-r", type=int, default=None, help="需求条数")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument("--min", type=int, default=None, metavar="N",
+                    help="可选：总分低于 N 时以退出码 1 结束（默认不卡，见模块文档）")
     args = ap.parse_args()
 
     md = Path(args.cases).read_text(encoding="utf-8")
     res = score_cases_md(md, requirement_count=args.requirements)
     print(json.dumps(res, ensure_ascii=False, indent=2) if args.json
           else render_text(res))
+    ok, msg = check_min(res, args.min)
+    if args.min is not None:
+        print(("\n✅ " if ok else "\n❌ ") + msg)
+    if not ok:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
