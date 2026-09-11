@@ -219,7 +219,7 @@ def api_project_files(pid: str) -> Any:
         out[key] = f.read_text(encoding="utf-8") if f.is_file() else ""
     cases = pdir / "artifacts" / "cases.md"
     out["cases"] = cases.read_text(encoding="utf-8") if cases.is_file() else ""
-    return jsonify({"ok": True, "files": out})
+    return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir)})
 
 
 def _llm_available() -> bool:

@@ -108,6 +108,25 @@ def test_cases_endpoint_agentic_true(monkeypatch, tmp_path):
     assert d["ok"] and d["agentic_used"] is True and "REQ-001-F" in d["markdown"]
 
 
+def test_files_endpoint_includes_run_meta(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "run_meta.json").write_text(
+        '{"ts":"2026-09-11 14:00","mode":"规则版","cases":9}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.get("/api/projects/demo/files")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] and d["run_meta"]["mode"] == "规则版" and d["run_meta"]["cases"] == 9
+
+
+def test_files_endpoint_run_meta_absent_is_none(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["ok"] and d["run_meta"] is None
+
+
 def test_run_endpoint_passes_llm_agentic_flags(monkeypatch, tmp_path):
     _mk_tmp_project(tmp_path)
     monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)

@@ -353,6 +353,35 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
     return summary
 
 
+RUN_META_FILE = "run_meta.json"
+
+
+def _write_run_meta(pdir: Path, **fields: Any) -> Dict[str, Any]:
+    """记录本次 run 的「怎么生成的」——供报告与 Web 展示，便于追溯。
+
+    fields 典型含：mode（生成模式）/ use_llm / agentic / lessons_injected /
+    requirements（需求条数）/ cases（用例条数）。写入 artifacts/run_meta.json。
+    """
+    meta: Dict[str, Any] = {"ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
+    meta.update(fields)
+    art = Path(pdir) / "artifacts"
+    art.mkdir(parents=True, exist_ok=True)
+    (art / RUN_META_FILE).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def _read_run_meta(pdir: Path) -> Optional[Dict[str, Any]]:
+    f = Path(pdir) / "artifacts" / RUN_META_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def _parse_cases(md_text: str) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """解析 cases.md：提取元信息 + Markdown 表格行。"""
     lines = md_text.strip().splitlines()
@@ -538,6 +567,19 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
     gate_badge = "<span class='gate ok'>全部通过</span>" if all_pass else "<span class='gate bad'>存在失败</span>"
     gate_desc = "最近一次核心回归符合门禁" if all_pass else "最近一次核心回归未通过门禁"
 
+    # 本次生成方式（可追溯）：模式 + 是否注入了历史易错点 + 需求/用例条数
+    _rmeta = _read_run_meta(pdir)
+    gen_item = ""
+    if _rmeta:
+        _parts = [_h(_rmeta.get("mode", ""))]
+        if _rmeta.get("lessons_injected"):
+            _parts.append("注入历史易错点")
+        if _rmeta.get("cases"):
+            _parts.append(f"{_rmeta.get('cases')} 条用例")
+        gen_item = ("<div class='summary-item'><span class='k'>生成模式</span>"
+                    f"<span class='v' style='font-size:14px;font-weight:700'>"
+                    f"{' · '.join(_parts)}</span></div>")
+
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>测试报告 - {pid}</title>
@@ -643,6 +685,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   <div class='summary-item'><span class='k'>场景总数</span><span class='v'>{reg.get('total', 0)}</span></div>
   <div class='summary-item'><span class='k'>通过</span><span class='v' style='color:var(--ok)'>{reg.get('passed', 0)}</span></div>
   <div class='summary-item'><span class='k'>失败</span><span class='v' style='color:var(--bad)'>{reg.get('failed', 0)}</span></div>
+  {gen_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
 
@@ -702,9 +745,32 @@ def cmd_run(args: argparse.Namespace) -> None:
     if inject:
         print(f"  [情景记忆] 检测到历史易错点，已注入需求→用例生成（{len(inject)} 字符）")
 
-    cases = _step_requirements(args.id, pdir, use_llm=getattr(args, "llm", False),
-                              agentic=getattr(args, "agentic", False),
-                              extra_context=inject)
+    use_llm = bool(getattr(args, "llm", False))
+    use_agentic = bool(getattr(args, "agentic", False))
+    cases = _step_requirements(args.id, pdir, use_llm=use_llm,
+                              agentic=use_agentic, extra_context=inject)
+    # 记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数
+    _mode = "智能体多步自审编排" if (use_llm and use_agentic) else ("LLM 增强" if use_llm else "规则版")
+    _case_count = 0
+    if cases and Path(cases).is_file():
+        try:
+            _, _rows = _parse_cases(Path(cases).read_text(encoding="utf-8"))
+            _case_count = len(_rows)
+        except Exception:
+            _case_count = 0
+    _req_count = 0
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import generate_cases as _gc  # noqa: E402
+        _rf = pdir / "requirements.md"
+        if _rf.is_file():
+            _req_count = len(_gc.parse_requirements(_rf.read_text(encoding="utf-8")))
+    except Exception:
+        _req_count = 0
+    _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
+                    lessons_injected=bool(inject),
+                    requirements=_req_count, cases=_case_count)
+
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
 

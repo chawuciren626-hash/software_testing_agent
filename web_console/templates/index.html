@@ -1523,6 +1523,7 @@ async function openDetail(pid){
   document.getElementById('d_requirements').value=d.files.requirements||'（暂无 requirements.md）';
   document.getElementById('d_regression').value=d.files.regression||'（暂无 regression.yaml）';
   document.getElementById('d_cases').value=d.files.cases||'（尚未生成用例，请先跑一次全流程）';
+  window.__runMeta=d.run_meta||null;   // 上次运行的生成方式（模式/是否注入易错点），供「已生成用例」页提示
   // 拉取情景记忆（P2 历史失败根因 / 重点覆盖清单）
   try {
     const lr = await fetch(`/api/projects/${encodeURIComponent(pid)}/lessons`);
@@ -1551,9 +1552,15 @@ function switchTab(tab){
   });
   const gen=document.getElementById('btnGenCases');
   if(gen) gen.style.display=tab==='cases'?'':'none';
-  document.getElementById('d_hint').textContent=tab==='cases'
+  let hint=tab==='cases'
     ? '用例由需求生成（规则版：每条需求拆功能/边界/异常三例）。点「立即生成用例」可按当前需求重新生成。'
     : '可直接编辑保存；保存后下一次执行即生效。';
+  const rm=window.__runMeta;
+  if(tab==='cases'&&rm&&rm.mode){
+    const extra=(rm.lessons_injected?' · 注入历史易错点':'')+(rm.cases?` · ${rm.cases} 条用例`:'');
+    hint+=`  ｜ 上次运行：${rm.mode}${extra}（${rm.ts||''}）`;
+  }
+  document.getElementById('d_hint').textContent=hint;
 }
 /* 按当前需求文本立即生成用例，无需跑全流程 */
 async function generateCases(){

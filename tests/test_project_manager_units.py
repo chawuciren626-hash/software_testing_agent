@@ -72,6 +72,35 @@ def test_step_report_gate_badge(tmp_path):
     assert "gate bad" in text_bad
 
 
+def test_run_meta_roundtrip(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    assert pm._read_run_meta(pdir) is None
+    pm._write_run_meta(pdir, mode="智能体多步自审编排", use_llm=True, agentic=True,
+                       lessons_injected=True, requirements=3, cases=9)
+    m = pm._read_run_meta(pdir)
+    assert m["mode"] == "智能体多步自审编排"
+    assert m["lessons_injected"] is True and m["cases"] == 9 and m["requirements"] == 3
+    assert (pdir / "artifacts" / pm.RUN_META_FILE).is_file()
+
+
+def test_step_report_shows_generation_mode(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    pm._write_run_meta(pdir, mode="LLM 增强", lessons_injected=True, cases=9)
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True, "results": []}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "生成模式" in txt and "LLM 增强" in txt and "注入历史易错点" in txt
+
+
+def test_step_report_without_run_meta_has_no_mode_item(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    reg = {"passed": 0, "total": 0, "failed": 0, "skipped": 0, "all_pass": False, "results": []}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "生成模式" not in txt
+
+
 def test_load_projects_skips_disabled(tmp_path, monkeypatch):
     # 准备两个项目目录，其中一个标记停用
     (tmp_path / "a").mkdir()
