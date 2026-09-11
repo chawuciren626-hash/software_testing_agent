@@ -367,6 +367,9 @@ svg{display:block;}
     <div class="nav-item" data-page="automation">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>自动化
     </div>
+    <div class="nav-item" data-page="gates">
+      <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>门禁
+    </div>
     <div class="nav-group">资源</div>
     <div class="nav-item" data-page="knowledge">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>资料库
@@ -439,6 +442,28 @@ svg{display:block;}
       <div class="empty" id="autoEmpty" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         暂无项目，先到「项目」页接入被测系统
+      </div>
+    </section>
+
+    <!-- 门禁 -->
+    <section class="page" id="page-gates">
+      <div class="summary" id="gateSummary"></div>
+      <div class="rep-card">
+        <div class="rname">项目门禁矩阵</div>
+        <div class="renv" style="margin:2px 0 10px">
+          三态判定：✅ 通过 / ❌ 未通过 / ⏭ 未执行。<b>未执行不算绿</b> —— 门禁没跑过就当通过是流水线里最危险的假绿；
+          「— 未配置」指项目根本没声明这道门禁，不参与判定（避免无谓红）。
+        </div>
+        <div id="gateList"></div>
+      </div>
+      <div class="rep-card">
+        <div class="rname">门禁摘要（可直接粘到群里）</div>
+        <div class="renv" style="margin:2px 0 10px">与 CLI 的 <code>gate_notify.py --dry-run</code> 同源同口径，不存在两套结论。</div>
+        <textarea id="gateText" class="mono" readonly style="min-height:200px;width:100%"></textarea>
+      </div>
+      <div class="empty" id="gateEmpty" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        暂无已接入项目。门禁未执行 ≠ 通过，请先到「项目」页登记被测系统
       </div>
     </section>
 
@@ -663,6 +688,7 @@ const PAGE_META = {
   tasks:{title:'任务',sub:'执行记录与实时日志'},
   reports:{title:'报告',sub:'各项目最近一次回归结果'},
   automation:{title:'自动化',sub:'核心业务回归场景'},
+  gates:{title:'门禁',sub:'三道门禁的三态结论（未执行 ≠ 通过）'},
   knowledge:{title:'资料库',sub:'项目文档与规范'},
   skills:{title:'技能',sub:'挂载到基座的 Agent Skills'},
   models:{title:'模型维护',sub:'LLM 提供商与默认模型'},
@@ -715,6 +741,10 @@ function topActionsFor(page){
             <button class="btn" onclick="exportReport('html')">${svg('download')} 完整报告 HTML</button>
             <button class="btn primary" onclick="renderReports()">${svg('refresh')} 刷新报告</button>`;
   }
+  if(page==='gates'){
+    return `<button class="btn" onclick="copyGateText()">${svg('doc')} 复制摘要</button>
+            <button class="btn primary" onclick="renderGates()">${svg('refresh')} 刷新门禁</button>`;
+  }
   return '';
 }
 document.querySelectorAll('.nav-item').forEach(el=>{
@@ -733,6 +763,7 @@ document.querySelectorAll('.nav-item').forEach(el=>{
     else if(page==='tasks') renderTasks();
     else if(page==='reports') renderReports();
     else if(page==='automation') renderAutomation();
+    else if(page==='gates') renderGates();
     else if(page==='knowledge') renderKnowledge();
     else if(page==='skills') loadSkills();
     else if(page==='models') renderModels();
@@ -1110,6 +1141,65 @@ async function renderAutomation(){
     <div class="stat"><div class="k">接入项目</div><div class="v s-info">${d.automations.length}</div></div>
     <div class="stat"><div class="k">核心场景</div><div class="v s-purple">${totalScn}</div></div>
     <div class="stat"><div class="k">最近通过</div><div class="v s-ok">${passed}</div></div>`;
+}
+
+// ---------- 门禁总览 ----------
+// 与 CLI 的 extensions/reporting/gate_notify.py 同源同口径：
+// 三态（通过 / 未通过 / 未执行），未执行不算绿；未配置不参与判定。
+const GATE_LABEL={regression:'核心业务回归',perf_security:'性能与安全',web:'Web UI 冒烟'};
+const GATE_MARK={pass:'✅ 通过',fail:'❌ 未通过',not_run:'⏭ 未执行',not_configured:'— 未配置'};
+
+async function renderGates(){
+  const listEl=document.getElementById('gateList');
+  const sumEl=document.getElementById('gateSummary');
+  const txtEl=document.getElementById('gateText');
+  const emptyEl=document.getElementById('gateEmpty');
+  listEl.innerHTML='<div class="hint">读取门禁结论…</div>';
+  let d;
+  try{
+    const r=await fetch('/api/gates'); d=await r.json();
+  }catch(e){ listEl.innerHTML='<div class="hint">读取失败：'+esc(e)+'</div>'; return; }
+  if(!d.ok){ listEl.innerHTML='<div class="hint">'+esc(d.error||'门禁摘要不可用')+'</div>'; return; }
+
+  const s=d.summary||{};
+  emptyEl.style.display=d.rows.length?'none':'';
+  sumEl.innerHTML=`
+    <div class="stat"><div class="k">接入项目</div><div class="v s-info">${s.projects||0}</div></div>
+    <div class="stat"><div class="k">门禁通过</div><div class="v s-ok">${s.pass||0}</div></div>
+    <div class="stat"><div class="k">未通过</div><div class="v s-bad">${s.fail||0}</div></div>
+    <div class="stat"><div class="k">未执行</div><div class="v s-purple">${s.not_run||0}</div></div>`;
+
+  if(!d.rows.length){ listEl.innerHTML=''; txtEl.value=d.text||''; return; }
+
+  const head=Object.keys(GATE_LABEL)
+    .map(k=>`<th>${GATE_LABEL[k]}</th>`).join('');
+  const trs=d.rows.map(r=>{
+    const mark={pass:'✅',fail:'❌',not_run:'⏭'}[r.verdict]||'?';
+    const cls=r.verdict==='pass'?'s-ok':(r.verdict==='fail'?'s-bad':'s-purple');
+    const cells=Object.keys(GATE_LABEL).map(k=>{
+      const g=(r.gates||{})[k];
+      if(!g) return '<td>—</td>';
+      const c=g.status==='pass'?'s-ok':(g.status==='fail'?'s-bad':'');
+      const tip=g.summary?` title="${esc(g.summary)}"`:'';
+      return `<td class="${c}"${tip}>${GATE_MARK[g.status]||g.status}</td>`;
+    }).join('');
+    return `<tr><td><b>${esc(r.pid)}</b><div class="renv">${esc(r.verdict_reason||r.name||'')}</div></td>${cells}
+      <td class="${cls}"><b>${mark} ${r.verdict==='pass'?'通过':(r.verdict==='fail'?'未通过':'未执行')}</b></td></tr>`;
+  }).join('');
+  listEl.innerHTML=`<table class="ps-tbl"><tr><th>项目</th>${head}<th>结论</th></tr>${trs}</table>`;
+  txtEl.value=d.text||'';
+}
+
+async function copyGateText(){
+  const el=document.getElementById('gateText');
+  if(!(el.value||'').trim()){ alert('还没有门禁摘要，先点「刷新门禁」'); return; }
+  try{
+    await navigator.clipboard.writeText(el.value);
+  }catch(e){
+    // 非 HTTPS / 旧浏览器下 clipboard API 不可用，退回选中复制
+    el.removeAttribute('readonly'); el.select(); document.execCommand('copy');
+    el.setAttribute('readonly','readonly');
+  }
 }
 
 // ---------- 报告中心 ----------

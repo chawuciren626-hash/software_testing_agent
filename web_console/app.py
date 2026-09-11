@@ -48,6 +48,7 @@ else:
 
 ROOT = RES_DIR  # agent-skills / docs / models 等资源根（frozen 下为 _MEIPASS）
 sys.path.insert(0, str(RES_DIR))
+sys.path.insert(0, str(RES_DIR / "extensions" / "reporting"))  # gate_notify
 import project_manager as pm  # noqa: E402  复用 load_projects / load_project
 import web_console.run_store as run_store  # noqa: E402  任务历史落盘 SQLite
 run_store.init_db(DATA_ROOT / "runs.db")
@@ -593,6 +594,28 @@ def api_project_scenes(pid: str) -> Any:
 def api_dashboard() -> Any:
     tid = _spawn_task("dashboard", "*", ["dashboard"])
     return jsonify({"ok": True, "task_id": tid})
+
+
+@app.get("/api/gates")
+def api_gates() -> Any:
+    """跨项目门禁总览：三态结论（通过 / 未通过 / 未执行）。
+
+    与 CLI 的 `gate_notify.py` 同源同口径 —— 避免"控制台说绿、CLI 说红"两套结论。
+    `?project=<pid>` 可只看指定项目（CI 用法：只看本次参与门禁的那个）。
+    """
+    try:
+        import gate_notify  # noqa: E402  延迟导入：仅在需要时解析
+    except Exception as e:  # 依赖缺失不该让整个控制台挂掉
+        return jsonify({"ok": False, "error": f"门禁摘要模块不可用：{e}"}), 500
+    only = request.args.get("project")
+    rows = gate_notify.collect_gates(pm.PROJECTS_DIR, only=[only] if only else None)
+    return jsonify({
+        "ok": True,
+        "rows": rows,
+        "summary": gate_notify.summarize(rows),
+        "text": gate_notify.render_text(rows),
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 
 @app.get("/api/tasks/<tid>")

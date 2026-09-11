@@ -433,3 +433,141 @@ def test_index_has_web_smoke_ui_hooks():
     # 详情弹窗是静态 HTML：里面不能残留模板插值，否则会原样显示成 ${svg('...')} Web 冒烟
     modal = html.split('id="detailMask"')[1].split("<!-- 完整报告弹窗")[0]
     assert "${svg(" not in modal, "详情弹窗静态 HTML 里残留了模板插值（会原样显示）"
+
+
+# ---- 门禁总览（/api/gates，与 CLI gate_notify 同源） ----
+def _write_gate(proj, name, all_pass, summary=""):
+    import json as _json
+    art = proj / "artifacts"
+    art.mkdir(exist_ok=True)
+    (art / name).write_text(
+        _json.dumps({"all_pass": all_pass, "summary": summary}, ensure_ascii=False),
+        encoding="utf-8")
+
+
+def test_gates_api_shape(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    assert d["ok"] is True
+    assert isinstance(d["rows"], list) and d["rows"]
+    assert set(d["summary"]) >= {"projects", "pass", "fail", "not_run", "all_pass"}
+    assert d["text"].strip()
+
+
+def test_gates_api_reuses_cli_semantics(monkeypatch, tmp_path):
+    """控制台与 CLI 必须同一口径，否则出现「控制台说绿、CI 说红」两套结论。"""
+    proj = _mk_tmp_project(tmp_path)
+    # 有 regression.yaml（= 声明了门禁）但没产物 → 未执行，不能算绿
+    (proj / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    row = d["rows"][0]
+    assert row["gates"]["regression"]["status"] == "not_run"
+    assert row["verdict"] == "not_run"          # 未执行 ≠ 通过
+    assert d["summary"]["all_pass"] is False
+
+
+def test_gates_api_three_states(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    (proj / "web.yaml").write_text("web:/n  scenarios: []\n", encoding="utf-8")
+    _write_gate(proj, "regression.json", True)
+    _write_gate(proj, "perf_security.json", False, "1 项失败")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    g = client.get("/api/gates").get_json()["rows"][0]["gates"]
+    assert g["regression"]["status"] == "pass"
+    assert g["perf_security"]["status"] == "fail"
+    assert g["web"]["status"] == "not_run"          # web.yaml 声明了但没跑
+    assert g["perf_security"]["summary"] == "1 项失败"
+
+
+def test_gates_api_project_filter(monkeypatch, tmp_path):
+    """CI 用法：只看本次参与门禁的项目，否则其余项目全记「未执行」→ 永远红。"""
+    a = _mk_tmp_project(tmp_path, "gate-a")
+    _write_gate(a, "regression.json", True)
+    (a / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _mk_tmp_project(tmp_path, "never-ran")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+
+    allrows = client.get("/api/gates").get_json()
+    assert len(allrows["rows"]) == 2 and allrows["summary"]["all_pass"] is False
+    one = client.get("/api/gates?project=gate-a").get_json()
+    assert len(one["rows"]) == 1 and one["rows"][0]["pid"] == "gate-a"
+
+
+def test_index_has_gates_ui_hooks():
+    """门禁页的前端入口/渲染函数必须在，否则接口再好用户也用不上。"""
+    html = client.get("/").get_data(as_text=True)
+    for token in ('data-page="gates"', 'id="page-gates"', "renderGates", "gateSummary",
+                  "gateList", "gateText", "GATE_MARK", "copyGateText"):
+        assert token in html, f"前端缺少 {token}"
+
+
+# ---- 门禁总览（/api/gates，与 CLI gate_notify 同源） ----
+def _write_gate(proj, name, all_pass, summary=""):
+    import json as _json
+    art = proj / "artifacts"
+    art.mkdir(exist_ok=True)
+    (art / name).write_text(
+        _json.dumps({"all_pass": all_pass, "summary": summary}, ensure_ascii=False),
+        encoding="utf-8")
+
+
+def test_gates_api_shape(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    assert d["ok"] is True
+    assert isinstance(d["rows"], list) and d["rows"]
+    assert set(d["summary"]) >= {"projects", "pass", "fail", "not_run", "all_pass"}
+    assert d["text"].strip()
+
+
+def test_gates_api_reuses_cli_semantics(monkeypatch, tmp_path):
+    """控制台与 CLI 必须同一口径，否则出现「控制台说绿、CI 说红」两套结论。"""
+    proj = _mk_tmp_project(tmp_path)
+    # 有 regression.yaml（= 声明了门禁）但没产物 → 未执行，不能算绿
+    (proj / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/gates").get_json()
+    row = d["rows"][0]
+    assert row["gates"]["regression"]["status"] == "not_run"
+    assert row["verdict"] == "not_run"          # 未执行 ≠ 通过
+    assert d["summary"]["all_pass"] is False
+
+
+def test_gates_api_three_states(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    (proj / "web.yaml").write_text("web:\n  scenarios: []\n", encoding="utf-8")
+    _write_gate(proj, "regression.json", True)
+    _write_gate(proj, "perf_security.json", False, "1 项失败")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    g = client.get("/api/gates").get_json()["rows"][0]["gates"]
+    assert g["regression"]["status"] == "pass"
+    assert g["perf_security"]["status"] == "fail"
+    assert g["web"]["status"] == "not_run"          # web.yaml 声明了但没跑
+    assert g["perf_security"]["summary"] == "1 项失败"
+
+
+def test_gates_api_project_filter(monkeypatch, tmp_path):
+    """CI 用法：只看本次参与门禁的项目，否则其余项目全记「未执行」→ 永远红。"""
+    a = _mk_tmp_project(tmp_path, "gate-a")
+    _write_gate(a, "regression.json", True)
+    (a / "regression.yaml").write_text("core_business: []\n", encoding="utf-8")
+    _mk_tmp_project(tmp_path, "never-ran")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+
+    allrows = client.get("/api/gates").get_json()
+    assert len(allrows["rows"]) == 2 and allrows["summary"]["all_pass"] is False
+    one = client.get("/api/gates?project=gate-a").get_json()
+    assert len(one["rows"]) == 1 and one["rows"][0]["pid"] == "gate-a"
+
+
+def test_index_has_gates_ui_hooks():
+    """门禁页的前端入口/渲染函数必须在，否则接口再好用户也用不上。"""
+    html = client.get("/").get_data(as_text=True)
+    for token in ('data-page="gates"', 'id="page-gates"', "renderGates", "gateSummary",
+                  "gateList", "gateText", "GATE_MARK", "copyGateText"):
+        assert token in html, f"前端缺少 {token}"
