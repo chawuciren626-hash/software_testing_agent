@@ -113,6 +113,17 @@ DEFAULT_OPENAI_MODEL = "deepseek-chat"
 # 本地 Ollama 默认 base（无需 key，可经 LLM_BASE_URL 覆盖）
 LOCAL_BASE_HINT = ("localhost", "127.0.0.1")
 
+
+def _default_timeout() -> int:
+    """单次 LLM 调用超时（秒）。可用 LLM_TIMEOUT 覆盖；默认 60。
+
+    多步编排（agentic）会串行多次调用，若模型较慢可把 LLM_TIMEOUT 调大（如 120）。
+    """
+    try:
+        return max(5, int(os.environ.get("LLM_TIMEOUT", "60")))
+    except (TypeError, ValueError):
+        return 60
+
 # 要求 LLM 输出与规则版完全一致的表头，保证下游 _parse_cases / 报告渲染直接复用
 GEMINI_PROMPT = """你是一名资深测试工程师。请把下面的需求/PR 描述转换为结构化测试用例，
 严格按下面的 Markdown 表格格式输出，**只输出表格本身，不要任何额外说明文字**：
@@ -133,12 +144,13 @@ GEMINI_PROMPT = """你是一名资深测试工程师。请把下面的需求/PR 
 
 
 def gemini_generate(text: str, api_key: Optional[str] = None,
-                    model: Optional[str] = None, timeout: int = 60) -> str:
+                    model: Optional[str] = None, timeout: Optional[int] = None) -> str:
     """调用 Gemini REST API 生成用例 Markdown（零额外依赖，仅用 requests）。
 
     针对免费套餐做了：指数退避重试（应对 429 限流）、5xx 重试、空响应保护。
     任何不可恢复错误都抛 GeminiError，由调用方降级到规则版。
     """
+    timeout = timeout or _default_timeout()
     api_key = api_key or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise GeminiError("缺少 GOOGLE_API_KEY（免费套餐也可用 AI Studio key）")
@@ -205,7 +217,7 @@ def gemini_generate(text: str, api_key: Optional[str] = None,
 def openai_compatible_generate(text: str, api_key: Optional[str] = None,
                                base_url: Optional[str] = None,
                                model: Optional[str] = None,
-                               timeout: int = 60) -> str:
+                               timeout: Optional[int] = None) -> str:
     """调用 OpenAI 兼容 Chat Completions 接口生成用例 Markdown（零额外依赖，仅用 requests）。
 
     适用于 DeepSeek / 通义千问 / 智谱 GLM / Kimi / MiniMax / 本地 Ollama 等所有兼容
@@ -213,6 +225,7 @@ def openai_compatible_generate(text: str, api_key: Optional[str] = None,
     都抛 LLMError，由调用方降级到规则版。本地 Ollama（base 含 localhost/127.0.0.1）
     可不配 key。
     """
+    timeout = timeout or _default_timeout()
     api_key = api_key or os.environ.get("LLM_API_KEY")
     model = model or os.environ.get("LLM_MODEL") or DEFAULT_OPENAI_MODEL
     base = (base_url or os.environ.get("LLM_BASE_URL") or os.environ.get("LLM_API_BASE")
@@ -288,16 +301,111 @@ def llm_configured() -> bool:
 
 def llm_generate(text: str, provider: Optional[str] = None,
                  api_key: Optional[str] = None, base_url: Optional[str] = None,
-                 model: Optional[str] = None, timeout: int = 60) -> str:
+                 model: Optional[str] = None, timeout: Optional[int] = None) -> str:
     """统一 LLM 入口：按 provider 分发（默认 openai 兼容，可选 gemini）。
 
     仅负责调用，不处理降级；降级由 generate_from_text 统一兜底。
     """
+    timeout = timeout or _default_timeout()
     provider = (provider or os.environ.get("LLM_PROVIDER", "openai")).lower()
     if provider == "gemini":
         return gemini_generate(text, api_key=api_key, model=model, timeout=timeout)
     return openai_compatible_generate(text, api_key=api_key, base_url=base_url,
                                       model=model, timeout=timeout)
+
+
+# ---- 智能体多步编排（需求→用例 Supervisor，P1 智能内核）----
+# 把单次 LLM 调用升级为「分析 → 初版 → 自评审 → 终版」四步闭环，并在评审/优化步注入
+# 历史易错点（情景记忆，来自 lessons.md）。任一子步骤失败都抛 LLMError，由 generate_from_text
+# 统一降级规则版。零额外依赖，仍只依赖 requests。
+
+_AGENT_SYS = "你是一名资深软件测试架构师，负责把需求转化为高质量、可执行、强覆盖的测试用例。"
+
+_PROMPT_ANALYZE = """请先分析下面的需求，输出结构化的「测试要点」清单（不要写用例，只拆要点）：
+- 每条要点标注类型（功能 / 边界 / 异常 / 性能 / 安全）与优先级（P1 / P2）
+- 若需求含接口，标注涉及的接口方法 / 路径
+- 列出需要特别关注的边界与异常分支
+
+需求：
+{text}"""
+
+_PROMPT_GENERATE = """基于上面的测试要点，生成结构化测试用例，严格按表格格式输出（只输出表格本身）：
+
+| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |
+|---|---|---|---|---|---|---|---|---|
+
+要求：
+- 为每条要点生成 功能 / 边界 / 异常 三类用例，id 形如 REQ-001-F / REQ-001-B / REQ-001-N
+- 类型只能取：功能 / 边界 / 异常；优先级取 P1 或 P2
+- 可自动化：可（pytest/Playwright）或 暂不可
+- 步骤用 "1. ... 2. ..." 编号；预期描述可观测结果
+- 若需求含接口，步骤中写入具体请求方法、路径与断言要点
+
+测试要点：
+{analysis}"""
+
+_PROMPT_REVIEW = """请评审下面这批测试用例的质量，只给评审意见（不要重写）：
+- 是否覆盖 功能 / 边界 / 异常 三类
+- 步骤是否可执行、预期是否可观测
+- 是否存在冗余或矛盾
+- 是否遗漏关键场景（尤其是边界 / 异常）{extra}
+
+用例：
+{cases}"""
+
+_PROMPT_REFINE = """根据评审意见，输出【最终版】测试用例，严格按表格格式（只输出表格，不要任何说明）：
+
+| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |
+|---|---|---|---|---|---|---|---|---|
+
+原始用例：
+{cases}
+
+评审意见：
+{review}"""
+
+
+def _extract_table(md: str) -> str:
+    """从 LLM 输出里抽取以表头起始的 Markdown 表格，作为鲁棒兜底（防模型加前导说明）。"""
+    lines = md.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("| id |") or s.startswith("|id |"):
+            start = i
+            break
+    if start is None:
+        return md.strip()
+    out = []
+    for ln in lines[start:]:
+        if ln.strip().startswith("|"):
+            out.append(ln)
+        elif out:
+            break
+    return "\n".join(out).strip() or md.strip()
+
+
+def agentic_generate(text: str, provider: Optional[str] = None,
+                     api_key: Optional[str] = None, base_url: Optional[str] = None,
+                     model: Optional[str] = None, extra_context: Optional[str] = None,
+                     timeout: Optional[int] = None) -> str:
+    """智能体多步编排：分析 → 初版 → 自评审 → 终版。
+
+    任一子步骤失败都抛 LLMError，由 generate_from_text 降级规则版。
+    extra_context（历史易错点）注入到评审/优化步，实现长程记忆闭环。
+    会串行调用 LLM 4 次；模型较慢时可增大 LLM_TIMEOUT。
+    """
+    timeout = timeout or _default_timeout()
+    extra = ("\n\n需重点覆盖的历史易错点（来自本项目历史回归失败）：\n" + extra_context) if extra_context else ""
+    analysis = llm_generate(_PROMPT_ANALYZE.format(text=text), provider=provider,
+                           api_key=api_key, base_url=base_url, model=model, timeout=timeout)
+    draft = llm_generate(_PROMPT_GENERATE.format(analysis=analysis), provider=provider,
+                        api_key=api_key, base_url=base_url, model=model, timeout=timeout)
+    review = llm_generate(_PROMPT_REVIEW.format(cases=draft, extra=extra), provider=provider,
+                         api_key=api_key, base_url=base_url, model=model, timeout=timeout)
+    final = llm_generate(_PROMPT_REFINE.format(cases=draft, review=review), provider=provider,
+                        api_key=api_key, base_url=base_url, model=model, timeout=timeout)
+    return _extract_table(final)
 
 
 def generate_from_text(text: str, use_llm: bool = False,
@@ -306,11 +414,15 @@ def generate_from_text(text: str, use_llm: bool = False,
                        base_url: Optional[str] = None,
                        model: Optional[str] = None,
                        source: str = "需求文本",
-                       extra_context: Optional[str] = None) -> str:
+                       extra_context: Optional[str] = None,
+                       agentic: bool = False) -> str:
     """需求文本 -> 用例 Markdown。
 
     use_llm=True 时优先走 LLM（provider 由 LLM_PROVIDER 决定，默认 openai 兼容）；
     任何失败（缺 key / 限流 / 异常）都自动降级到零依赖规则版并打日志，绝不中断流水线。
+
+    agentic=True 时在 LLM 路径启用多步自审编排（分析→初版→自评审→终版），质量更高，
+    代价是 4 次 LLM 调用（更慢/更费额度）；默认 False 走单次调用。
 
     extra_context: 情景记忆注入（历史易错点重点覆盖清单）。LLM 版直接拼进 prompt 让其
     推理加强覆盖；规则版只在用例表格后追加建议段（规则版无法自动推理，需人工/LLM 版增强），
@@ -321,6 +433,10 @@ def generate_from_text(text: str, use_llm: bool = False,
             prompt = text
             if extra_context:
                 prompt = text + "\n\n# 历史易错点（重点覆盖）\n" + extra_context
+            if agentic:
+                return agentic_generate(prompt, provider=provider, api_key=api_key,
+                                        base_url=base_url, model=model,
+                                        extra_context=extra_context)
             return llm_generate(prompt, provider=provider, api_key=api_key,
                                 base_url=base_url, model=model)
         except LLMError as e:
@@ -344,6 +460,8 @@ def main() -> None:
     ap.add_argument("--output", "-o", help="输出 Markdown 路径（缺省 stdout）")
     ap.add_argument("--llm", action="store_true",
                     help="启用 LLM 增强生成（默认 openai 兼容 provider；失败自动降级规则版）")
+    ap.add_argument("--agentic", action="store_true",
+                    help="启用智能体多步自审编排（分析→初版→自评审→终版，质量更高但 4 次 LLM 调用）；需配合 --llm")
     ap.add_argument("--provider", choices=["openai", "gemini"], default=None,
                     help="LLM 厂商（覆盖 LLM_PROVIDER 环境变量；默认 openai）")
     args = ap.parse_args()
@@ -354,8 +472,8 @@ def main() -> None:
     else:
         text = sys.stdin.read()
 
-    result = generate_from_text(text, use_llm=args.llm, provider=args.provider,
-                                source=args.input or "stdin")
+    result = generate_from_text(text, use_llm=args.llm, agentic=args.agentic,
+                                provider=args.provider, source=args.input or "stdin")
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:

@@ -287,6 +287,7 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 def _step_requirements(pid: str, pdir: Path, use_llm: bool = False,
+                       agentic: bool = False,
                        extra_context: Optional[str] = None) -> Optional[Path]:
     req_file = pdir / "requirements.md"
     out = pdir / "artifacts" / "cases.md"
@@ -297,11 +298,12 @@ def _step_requirements(pid: str, pdir: Path, use_llm: bool = False,
     import generate_cases as gc  # noqa: E402
 
     text = req_file.read_text(encoding="utf-8")
-    md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file),
-                               extra_context=extra_context)
+    md = gc.generate_from_text(text, use_llm=use_llm, agentic=agentic,
+                               source=str(req_file), extra_context=extra_context)
     out.write_text(md, encoding="utf-8")
     _, rows = _parse_cases(md)
-    print(f"  [需求->用例] {'LLM 增强' if use_llm else '规则版'}：{len(rows)} 条用例 -> {out}")
+    mode = "智能体多步编排" if (use_llm and agentic) else ("LLM 增强" if use_llm else "规则版")
+    print(f"  [需求->用例] {mode}：{len(rows)} 条用例 -> {out}")
     return out
 
 
@@ -701,6 +703,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  [情景记忆] 检测到历史易错点，已注入需求→用例生成（{len(inject)} 字符）")
 
     cases = _step_requirements(args.id, pdir, use_llm=getattr(args, "llm", False),
+                              agentic=getattr(args, "agentic", False),
                               extra_context=inject)
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
@@ -821,23 +824,25 @@ tr.skip td:nth-child(6){{color:#b45309;font-weight:600;}}
 
 
 def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] = None,
-                 use_llm: bool = False) -> Path:
+                 use_llm: bool = False, agentic: bool = False) -> Path:
     """统一流水线：需求 -> 用例 -> [接口自动化] -> 报告总览。
 
     供 CLI ``run`` 与轻量入口（software_testing_agent.py）共用，消除双入口漂移。
     不依赖 LLM；传入 use_llm=True 且配置 LLM_API_KEY（OpenAI 兼容，如 Qwen/DeepSeek，
     provider 由 LLM_PROVIDER 决定）时需求→用例走 LLM 增强，失败自动降级规则版。
+    agentic=True（需配合 use_llm）走智能体多步自审编排，质量更高但 4 次 LLM 调用。
     """
     # 1) 需求 -> 用例
     sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
     import generate_cases as gc  # noqa: F401  (延迟导入，避免基座依赖常驻)
     text = Path(req_file).read_text(encoding="utf-8")
-    md = gc.generate_from_text(text, use_llm=use_llm, source=req_file)
+    md = gc.generate_from_text(text, use_llm=use_llm, agentic=agentic, source=req_file)
     cases_md = ROOT / "extensions" / "requirements_to_cases" / "cases.md"
     cases_md.write_text(md, encoding="utf-8")
     items = gc.parse_requirements(text)
     _, rows = _parse_cases(md)
-    print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，{'LLM 增强' if use_llm else '规则版'}生成 {len(rows)} 条用例 → {cases_md}")
+    _mode = "智能体多步编排" if (use_llm and agentic) else ("LLM 增强" if use_llm else "规则版")
+    print(f"[1/3] 需求→用例：解析 {len(items)} 条需求，{_mode}生成 {len(rows)} 条用例 → {cases_md}")
 
     # 2) 接口自动化（可选）
     if run_api:
@@ -897,6 +902,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("id")
     r.add_argument("--llm", action="store_true",
                    help="需求→用例采用 LLM 增强（需 LLM_API_KEY；失败自动降级规则版）")
+    r.add_argument("--agentic", action="store_true",
+                   help="LLM 增强启用智能体多步自审编排（分析→初版→自评审→终版，质量更高但 4 次调用）；需配合 --llm")
     r.set_defaults(func=cmd_run)
 
     g = sub.add_parser("regression", help="仅核心业务回归")

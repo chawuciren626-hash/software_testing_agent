@@ -507,6 +507,9 @@ svg{display:block;}
       <label class="llm-toggle" id="llmToggleWrap" style="display:none" title="需配置 LLM_API_KEY（OpenAI 兼容，如 Qwen/DeepSeek；失败自动降级规则版）">
         <input type="checkbox" id="cbLlm"><span>使用 LLM 智能生成</span>
       </label>
+      <label class="llm-toggle" id="agenticToggleWrap" style="display:none" title="多步自审编排：分析→初版→自评审→终版，质量更高，但会调用 LLM 4 次；需先勾选「LLM 智能生成」">
+        <input type="checkbox" id="cbAgentic"><span>多步自审编排</span>
+      </label>
       <button class="btn" id="btnGenCases" style="display:none" onclick="generateCases()">立即生成用例</button>
       <button class="btn primary" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
     </div>
@@ -1512,7 +1515,9 @@ async function openDetail(pid){
     window.__llmAvailable=!!(sd&&sd.available);
   }catch(e){ window.__llmAvailable=false; }
   document.getElementById('llmToggleWrap').style.display = window.__llmAvailable ? 'inline-flex' : 'none';
+  document.getElementById('agenticToggleWrap').style.display = window.__llmAvailable ? 'inline-flex' : 'none';
   document.getElementById('cbLlm').checked=false;
+  document.getElementById('cbAgentic').checked=false;
   switchTab('requirements');
   document.getElementById('detailMask').classList.add('show');
 }
@@ -1536,8 +1541,10 @@ async function generateCases(){
   try{
     // 带上当前需求文本，保证「所见即所生成」（同时落盘，避免用了旧的 requirements.md）
     const req=document.getElementById('d_requirements').value||'';
-    const useLlm=!!(document.getElementById('cbLlm')&&document.getElementById('cbLlm').checked);
-    const body=(req && req.indexOf('（暂无')!==0)?{requirements:req,llm:useLlm}:{llm:useLlm};
+    const useAgentic=!!(document.getElementById('cbAgentic')&&document.getElementById('cbAgentic').checked);
+    const useLlm=useAgentic||!!(document.getElementById('cbLlm')&&document.getElementById('cbLlm').checked);
+    const base={llm:useLlm,agentic:useAgentic};
+    const body=(req && req.indexOf('（暂无')!==0)?Object.assign({requirements:req},base):base;
     const r=await fetch(`/api/projects/${encodeURIComponent(detailPid)}/cases`,{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
@@ -1546,9 +1553,11 @@ async function generateCases(){
     }
     document.getElementById('d_cases').value=d.markdown||'';
     let tip='';
-    if(d.llm_used) tip='（已用 LLM 智能生成）';
+    if(d.agentic_used) tip='（已用智能体多步自审编排生成）';
+    else if(d.llm_used) tip='（已用 LLM 智能生成）';
     else if(d.llm_available) tip='（本次走规则版）';
     else tip='（规则版：配置 LLM_API_KEY 后可切换更智能的生成）';
+    if(d.lessons_injected) tip+=' · 已注入历史易错点';
     err.style.color='var(--ok,#10b981)';
     err.textContent=`已生成：${d.requirements} 条需求 → ${d.cases} 条用例 ${tip}`;
     err.style.display='block';

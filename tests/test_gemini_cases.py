@@ -265,3 +265,102 @@ def test_llm_generate_dispatches_to_gemini(monkeypatch):
     monkeypatch.setattr(gc, "gemini_generate", fake_gemini)
     out = gc.llm_generate("x", provider="gemini", api_key="dummy")
     assert called["gemini"] is True and "REQ-001-F" in out
+
+
+# ---------------------------------------------------------------------------
+# 智能体多步编排（agentic_generate）
+# ---------------------------------------------------------------------------
+_FINAL_TABLE = ("前言说明应当被裁掉\n\n"
+                "| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |\n"
+                "|---|---|---|---|---|---|---|---|---|\n"
+                "| REQ-001-F | 登录（功能） | 认证 | 功能 | P1 | 已部署 | 1. 登录 | 成功 | 可（pytest） |")
+
+
+def test_agentic_generate_runs_four_steps_and_extracts_table(monkeypatch):
+    prompts = []
+
+    def fake_llm(text, **k):
+        prompts.append(text)
+        if len(prompts) == 1:      # 分析
+            return "测试要点：1. 登录 2. 失败锁定"
+        if len(prompts) == 2:      # 初版
+            return "| id | 标题 |\n|---|---|\n| REQ-001-F | 登录 |"
+        if len(prompts) == 3:      # 评审
+            return "评审意见：缺少异常分支"
+        return _FINAL_TABLE        # 终版（带前导说明，应被裁掉）
+
+    monkeypatch.setattr(gc, "llm_generate", fake_llm)
+    out = gc.agentic_generate("用户可登录，失败 5 次锁定")
+    assert len(prompts) == 4                       # 四步各一次
+    assert out.startswith("| id |")                # 前导说明被裁掉
+    assert "REQ-001-F" in out
+
+
+def test_agentic_generate_injects_lessons_into_review(monkeypatch):
+    prompts = []
+
+    def fake_llm(text, **k):
+        prompts.append(text)
+        return _FINAL_TABLE
+
+    monkeypatch.setattr(gc, "llm_generate", fake_llm)
+    gc.agentic_generate("需求", extra_context="登录失败锁定（历史失败 3 次）")
+    # 评审步（第 3 次调用）应包含注入的历史易错点
+    assert "登录失败锁定" in prompts[2]
+
+
+def test_agentic_generate_propagates_llm_error(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_llm(text, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise gc.LLMError("模拟第 2 步失败")
+        return "ok"
+
+    monkeypatch.setattr(gc, "llm_generate", fake_llm)
+    with pytest.raises(gc.LLMError):
+        gc.agentic_generate("需求")
+
+
+def test_generate_from_text_agentic_uses_agentic_path(monkeypatch):
+    seen = {}
+
+    def fake_agentic(text, **k):
+        seen["called"] = True
+        seen["extra"] = k.get("extra_context")
+        return "| id | 标题 |\n|---|---|\n| REQ-001-F | 登录 |"
+
+    monkeypatch.setattr(gc, "agentic_generate", fake_agentic)
+    out = gc.generate_from_text("1. 用户可登录", use_llm=True, agentic=True,
+                                extra_context="历史易错点X")
+    assert seen["called"] is True
+    assert seen["extra"] == "历史易错点X"
+    assert "REQ-001-F" in out
+
+
+def test_generate_from_text_agentic_falls_back_on_error(monkeypatch, capsys):
+    def boom(*a, **k):
+        raise gc.LLMError("模拟编排失败")
+
+    monkeypatch.setattr(gc, "agentic_generate", boom)
+    out = gc.generate_from_text("1. 用户可登录", use_llm=True, agentic=True)
+    assert "| REQ-001-F |" in out  # 已降级规则版
+    assert "降级" in capsys.readouterr().out
+
+
+def test_default_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("LLM_TIMEOUT", "120")
+    assert gc._default_timeout() == 120
+    monkeypatch.setenv("LLM_TIMEOUT", "bad")
+    assert gc._default_timeout() == 60
+    monkeypatch.delenv("LLM_TIMEOUT", raising=False)
+    assert gc._default_timeout() == 60
+
+
+def test_extract_table_strips_preamble_and_postamble():
+    raw = "说明文字\n" + _FINAL_TABLE.split("\n\n", 1)[1] + "\n\n结尾说明"
+    out = gc._extract_table(raw)
+    assert out.startswith("| id |")
+    assert "REQ-001-F" in out
+    assert "说明文字" not in out and "结尾说明" not in out

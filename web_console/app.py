@@ -243,6 +243,7 @@ def api_project_cases(pid: str) -> Any:
 
     data = request.get_json(silent=True) or {}
     use_llm = bool(data.get("llm"))
+    use_agentic = bool(data.get("agentic")) and use_llm
     if isinstance(data.get("requirements"), str):
         (pdir / "requirements.md").write_text(data["requirements"], encoding="utf-8")
 
@@ -250,11 +251,21 @@ def api_project_cases(pid: str) -> Any:
     if not req_file.is_file():
         return jsonify({"ok": False, "error": "尚无 requirements.md，请先填写需求"}), 400
 
+    # 情景记忆：注入项目历史易错点（若已生成 lessons.md）
+    extra_context = None
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+        import lessons as ls  # noqa: E402
+        extra_context = ls.to_inject_prompt(pdir)
+    except Exception:
+        extra_context = None
+
     try:
         sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
         import generate_cases as gc  # noqa: E402
         text = req_file.read_text(encoding="utf-8")
-        md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file))
+        md = gc.generate_from_text(text, use_llm=use_llm, agentic=use_agentic,
+                                   source=str(req_file), extra_context=extra_context)
         items = gc.parse_requirements(text)
         out = pdir / "artifacts" / "cases.md"
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -270,6 +281,8 @@ def api_project_cases(pid: str) -> Any:
         "markdown": out.read_text(encoding="utf-8"),
         "llm_used": use_llm and _llm_available(),
         "llm_available": _llm_available(),
+        "agentic_used": use_agentic and _llm_available(),
+        "lessons_injected": bool(extra_context),
     })
 
 

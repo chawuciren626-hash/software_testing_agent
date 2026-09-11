@@ -135,6 +135,7 @@ python project_manager.py dashboard      # 生成跨项目总览看板
 | `LLM_API_KEY` | OpenAI 兼容平台 key（本地 Ollama 可省略） | 空 |
 | `LLM_BASE_URL` | OpenAI 兼容 endpoint 的 base，如 `https://api.deepseek.com/v1`、`http://localhost:11434/v1` | OpenAI 官方 |
 | `LLM_MODEL` | 模型名，如 `deepseek-chat`、`qwen-plus`、`glm-4-flash`、`moonshot-v1-8k` | `deepseek-chat` |
+| `LLM_TIMEOUT` | 单次 LLM 调用超时（秒）。多步编排或慢模型可调大（如 `120`） | `60` |
 | `GOOGLE_API_KEY` / `GEMINI_MODEL` / `GEMINI_API_BASE` | 仅 `LLM_PROVIDER=gemini` 时使用 | - |
 
 **常用接入示例：**
@@ -158,6 +159,20 @@ LLM_PROVIDER=gemini GOOGLE_API_KEY=xxx python project_manager.py run <id> --llm
 ```
 
 > 切换模型**只需改环境变量**，代码无需改动；Web 控制台「模型维护」页可查看当前 provider 与 key 配置状态。
+
+### 🧠 智能体多步自审编排（`--agentic`）
+
+在 LLM 增强基础上，可开启**多步自审编排**（P1 智能内核），把单次调用升级为四步闭环：
+
+```
+需求分析 → 初版用例 → 自评审（注入历史易错点）→ 终版优化
+```
+
+- 命令行：`python project_manager.py run <id> --llm --agentic`
+- Web 控制台：项目详情 → 「多步自审编排」勾选框（需先配置 LLM）
+- 质量更高（自评审会补齐边界/异常、去冗余），代价是**串行调用 LLM 4 次**（更慢/更费额度）；
+  模型较慢时请调大 `LLM_TIMEOUT`。**任意一步失败都会自动降级规则版**，不中断流水线。
+- 若项目已生成 `lessons.md`（情景记忆），历史易错点会在评审/优化步被注入，形成"越跑越准"的闭环。
 
 ---
 

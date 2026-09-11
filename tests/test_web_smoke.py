@@ -87,3 +87,41 @@ def test_lessons_endpoint_unknown_project(monkeypatch, tmp_path):
     monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
     r = client.get("/api/projects/nope/lessons")
     assert r.status_code == 404
+
+
+_FULL_TABLE = (
+    "| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |\n"
+    "|---|---|---|---|---|---|---|---|---|\n"
+    "| REQ-001-F | 登录（功能） | 认证 | 功能 | P1 | 已部署 | 1. 登录 | 成功 | 可（pytest） |"
+)
+
+
+def test_cases_endpoint_agentic_true(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setitem(os.environ, "LLM_API_KEY", "dummy")
+    monkeypatch.setattr(gc, "agentic_generate", lambda *a, **k: _FULL_TABLE)
+    r = client.post("/api/projects/demo/cases",
+                    json={"requirements": "1. 用户可登录", "llm": True, "agentic": True})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] and d["agentic_used"] is True and "REQ-001-F" in d["markdown"]
+
+
+def test_cases_endpoint_injects_lessons(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "lessons.md").write_text(
+        "# 情景记忆\n1. **登录失败锁定** —— 历史失败 3 次\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+
+    def fake_gen(text, **k):
+        captured["extra"] = k.get("extra_context")
+        return _FULL_TABLE
+
+    monkeypatch.setattr(gc, "generate_from_text", fake_gen)
+    r = client.post("/api/projects/demo/cases", json={"requirements": "1. 用户可登录"})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["lessons_injected"] is True
+    assert "登录失败锁定" in (captured.get("extra") or "")
