@@ -286,7 +286,8 @@ def cmd_info(args: argparse.Namespace) -> None:
         print(f"  {k}: {v}")
 
 
-def _step_requirements(pid: str, pdir: Path, use_llm: bool = False) -> Optional[Path]:
+def _step_requirements(pid: str, pdir: Path, use_llm: bool = False,
+                       extra_context: Optional[str] = None) -> Optional[Path]:
     req_file = pdir / "requirements.md"
     out = pdir / "artifacts" / "cases.md"
     if not req_file.is_file():
@@ -296,7 +297,8 @@ def _step_requirements(pid: str, pdir: Path, use_llm: bool = False) -> Optional[
     import generate_cases as gc  # noqa: E402
 
     text = req_file.read_text(encoding="utf-8")
-    md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file))
+    md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file),
+                               extra_context=extra_context)
     out.write_text(md, encoding="utf-8")
     _, rows = _parse_cases(md)
     print(f"  [需求->用例] {'LLM 增强' if use_llm else '规则版'}：{len(rows)} 条用例 -> {out}")
@@ -668,6 +670,19 @@ def _h(s: Any) -> str:
     return _html.escape(str(s))
 
 
+def _load_run_store():
+    """加载 web_console/run_store（用 importlib 直接加载文件，避免触发 web_console 包的副作用）。"""
+    import importlib.util
+    name = "_pm_run_store"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, str(ROOT / "web_console" / "run_store.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     meta = load_project(args.id)
     pdir = PROJECTS_DIR / args.id
@@ -675,9 +690,24 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"== 全流程测试：{args.id}（环境 {base_url}）==")
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "artifacts").mkdir(exist_ok=True)
-    cases = _step_requirements(args.id, pdir, use_llm=getattr(args, "llm", False))
+
+    # P2 情景记忆：读历史易错点注入需求→用例；run 之后写快照并重建 lessons.md
+    sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+    import lessons as ls  # noqa: E402
+    run_store = _load_run_store()
+    run_store.init_db(ROOT / "runs.db")
+    inject = ls.to_inject_prompt(pdir)
+    if inject:
+        print(f"  [情景记忆] 检测到历史易错点，已注入需求→用例生成（{len(inject)} 字符）")
+
+    cases = _step_requirements(args.id, pdir, use_llm=getattr(args, "llm", False),
+                              extra_context=inject)
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
+
+    run_store.insert_snapshot(args.id, reg, trigger="run")
+    ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
+
     _step_report(args.id, pdir, cases, reg)
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
 
@@ -688,6 +718,15 @@ def cmd_regression(args: argparse.Namespace) -> None:
     base_url = (meta.get("env", {}) or {}).get("base_url", "http://localhost:8080")
     print(f"== 核心业务回归：{args.id}（环境 {base_url}）==")
     reg = _step_regression(args.id, pdir)
+
+    # P2 情景记忆：写快照 + 重建 lessons.md（失败根因闭环）
+    run_store = _load_run_store()
+    run_store.init_db(ROOT / "runs.db")
+    sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+    import lessons as ls  # noqa: E402
+    run_store.insert_snapshot(args.id, reg, trigger="regression")
+    ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
+
     sys.exit(0 if reg["all_pass"] else 1)
 
 

@@ -305,22 +305,37 @@ def generate_from_text(text: str, use_llm: bool = False,
                        api_key: Optional[str] = None,
                        base_url: Optional[str] = None,
                        model: Optional[str] = None,
-                       source: str = "需求文本") -> str:
+                       source: str = "需求文本",
+                       extra_context: Optional[str] = None) -> str:
     """需求文本 -> 用例 Markdown。
 
     use_llm=True 时优先走 LLM（provider 由 LLM_PROVIDER 决定，默认 openai 兼容）；
     任何失败（缺 key / 限流 / 异常）都自动降级到零依赖规则版并打日志，绝不中断流水线。
+
+    extra_context: 情景记忆注入（历史易错点重点覆盖清单）。LLM 版直接拼进 prompt 让其
+    推理加强覆盖；规则版只在用例表格后追加建议段（规则版无法自动推理，需人工/LLM 版增强），
+    不会污染需求解析（parse_requirements 跳过标题行）。无 extra_context 时行为与原来一致。
     """
     if use_llm:
         try:
-            return llm_generate(text, provider=provider, api_key=api_key,
+            prompt = text
+            if extra_context:
+                prompt = text + "\n\n# 历史易错点（重点覆盖）\n" + extra_context
+            return llm_generate(prompt, provider=provider, api_key=api_key,
                                 base_url=base_url, model=model)
         except LLMError as e:
             print(f"  [需求->用例] LLM 增强失败，已自动降级为规则版：{e}")
-    items = parse_requirements(text)
+    items = parse_requirements(text)  # 规则版只用原始需求，extra_context 不进解析
     if not items:
         return "# 未解析到需求条目。请使用编号/项目符号列表书写需求。\n"
-    return to_markdown(gen_cases(items), source)
+    md = to_markdown(gen_cases(items), source)
+    if extra_context:
+        md += (
+            "\n\n## 历史易错点重点覆盖建议\n"
+            "> 以下为历史回归失败根因，建议补充覆盖（规则版无法自动推理，"
+            "需人工或 LLM 版增强）：\n\n" + extra_context + "\n"
+        )
+    return md
 
 
 def main() -> None:
