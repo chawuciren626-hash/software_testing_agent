@@ -87,8 +87,15 @@ _TASK_LOCK = threading.Lock()
 
 
 def _spawn_task(kind: str, pid: str, args: List[str],
-                scene: Optional[str] = None) -> str:
-    """后台起一个 project_manager 子进程，输出实时落进 task['log']。"""
+                scene: Optional[str] = None,
+                extra_args: Optional[List[str]] = None) -> str:
+    """后台起一个 project_manager 子进程，输出**逐行实时**落进 task['log']。
+
+    extra_args：追加到命令末尾的开关（如 --llm / --agentic）。
+    用 Popen 逐行读取，前端轮询 /api/tasks/<tid> 即可看到日志**实时增长**，
+    而不是等整个流程跑完才一次性出现。
+    """
+    full_args = list(args) + list(extra_args or [])
     tid = uuid.uuid4().hex[:12]
     task: Dict[str, Any] = {
         "id": tid, "kind": kind, "pid": pid, "status": "running",
@@ -96,7 +103,7 @@ def _spawn_task(kind: str, pid: str, args: List[str],
         "finished": None, "exit_code": None, "log": "",
         "created_at": int(time.time()),
         "started_ts": time.time(),
-        "command": f"project_manager.py {' '.join(args)}",
+        "command": f"project_manager.py {' '.join(full_args)}",
         "scene": scene,
     }
     with _TASK_LOCK:
@@ -105,21 +112,36 @@ def _spawn_task(kind: str, pid: str, args: List[str],
     run_store.insert_run(task)
 
     def _run() -> None:
+        proc: Optional[subprocess.Popen] = None
+        timer: Optional[threading.Timer] = None
         try:
-            proc = subprocess.run(
-                [pm.python_exe(), pm_script(), *args],
-                cwd=str(DATA_ROOT), capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=1800,
+            proc = subprocess.Popen(
+                [pm.python_exe(), pm_script(), *full_args],
+                cwd=str(DATA_ROOT),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
             )
-            task["log"] = (proc.stdout or "") + (proc.stderr or "")
-            task["exit_code"] = proc.returncode
+            # 硬超时保护（与旧实现一致的 30 分钟）：到点直接 kill，避免僵尸进程
+            timer = threading.Timer(1800, proc.kill)
+            timer.daemon = True
+            timer.start()
+            buf: List[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                buf.append(line)
+                task["log"] = "".join(buf)  # 增量可见：前端轮询即实时刷新
+            proc.stdout.close()
+            rc = proc.wait()
+            task["exit_code"] = rc
             # regression 命令门禁语义：0=通过（或仅 run 正常结束）
-            task["status"] = "success" if proc.returncode == 0 else "failed"
+            task["status"] = "success" if rc == 0 else "failed"
         except Exception as e:  # pragma: no cover
-            task["log"] = f"执行异常：{e}"
+            task["log"] = (task.get("log") or "") + f"\n执行异常：{e}"
             task["status"] = "failed"
             task["exit_code"] = -1
         finally:
+            if timer is not None:
+                timer.cancel()
             task["finished"] = datetime.now().strftime("%H:%M:%S")
             task["finished_ts"] = time.time()
             run_store.update_run(tid, task["status"], task["finished"],
@@ -388,10 +410,19 @@ def api_project_delete(pid: str) -> Any:
 
 @app.post("/api/projects/<pid>/run")
 def api_run(pid: str) -> Any:
+    """跑全流程。body 可带 {llm: true, agentic: true} 以启用 LLM 增强 / 多步自审编排。"""
     if not (pm.PROJECTS_DIR / pid / "project.yaml").is_file():
         return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
-    tid = _spawn_task("run", pid, ["run", pid])
-    return jsonify({"ok": True, "task_id": tid})
+    body = request.get_json(silent=True) or {}
+    use_llm = bool(body.get("llm")) and _llm_available()
+    use_agentic = bool(body.get("agentic")) and use_llm
+    extra: List[str] = []
+    if use_llm:
+        extra.append("--llm")
+    if use_agentic:
+        extra.append("--agentic")
+    tid = _spawn_task("run", pid, ["run", pid], extra_args=extra)
+    return jsonify({"ok": True, "task_id": tid, "llm": use_llm, "agentic": use_agentic})
 
 
 @app.post("/api/projects/<pid>/regression")

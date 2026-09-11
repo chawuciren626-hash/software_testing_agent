@@ -108,6 +108,51 @@ def test_cases_endpoint_agentic_true(monkeypatch, tmp_path):
     assert d["ok"] and d["agentic_used"] is True and "REQ-001-F" in d["markdown"]
 
 
+def test_run_endpoint_passes_llm_agentic_flags(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setitem(os.environ, "LLM_API_KEY", "dummy")  # 让 _llm_available()=True
+    captured = {}
+
+    def fake_spawn(kind, pid, args, scene=None, extra_args=None):
+        captured.update(kind=kind, pid=pid, args=args, extra_args=extra_args)
+        return "tid123"
+
+    monkeypatch.setattr(web_app, "_spawn_task", fake_spawn)
+    r = client.post("/api/projects/demo/run", json={"llm": True, "agentic": True})
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] and d["llm"] is True and d["agentic"] is True
+    assert captured["extra_args"] == ["--llm", "--agentic"]
+
+
+def test_run_endpoint_defaults_to_rule_mode(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(extra_args=extra_args) or "tid")
+    r = client.post("/api/projects/demo/run")
+    assert r.status_code == 200
+    assert captured["extra_args"] == []
+    assert r.get_json()["llm"] is False
+
+
+def test_run_endpoint_agentic_requires_llm(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(extra_args=extra_args) or "tid")
+    r = client.post("/api/projects/demo/run", json={"agentic": True})  # 未同时给 llm
+    assert r.status_code == 200
+    assert captured["extra_args"] == []  # agentic 必须配合 llm
+
+
 def test_cases_endpoint_injects_lessons(monkeypatch, tmp_path):
     proj = _mk_tmp_project(tmp_path)
     (proj / "lessons.md").write_text(

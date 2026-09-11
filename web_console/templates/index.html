@@ -511,7 +511,8 @@ svg{display:block;}
         <input type="checkbox" id="cbAgentic"><span>多步自审编排</span>
       </label>
       <button class="btn" id="btnGenCases" style="display:none" onclick="generateCases()">立即生成用例</button>
-      <button class="btn primary" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
+      <button class="btn primary" id="btnRunPipeline" onclick="runPipelineFromDetail()" title="保存当前编辑内容后，按上面勾选的生成模式跑完整流程（需求→用例→接口→回归→报告）">跑全流程</button>
+      <button class="btn" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
     </div>
   </div>
 </div>
@@ -748,13 +749,34 @@ async function renderProjects(){
 }
 
 // ---------- 执行 ----------
-async function exec(pid,kind){
+async function exec(pid,kind,body){
   const url=kind==='run'?`/api/projects/${pid}/run`:`/api/projects/${pid}/regression`;
-  const r=await fetch(url,{method:'POST'}); const d=await r.json();
+  const opts={method:'POST'};
+  if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}
+  const r=await fetch(url,opts); const d=await r.json();
   if(!d.ok){alert('执行失败：'+d.error);return;}
+  if(kind==='run'&&d.llm){
+    const mode=d.agentic?'LLM 多步自审编排':'LLM 增强';
+    console.log('[run] 生成模式：'+mode);
+  }
   currentLogTask=d.task_id;
   document.querySelector('.nav-item[data-page="tasks"]').click();
   pollTask(d.task_id);
+}
+// 从项目详情「跑全流程」：先落盘当前编辑内容，再按勾选的生成模式执行
+async function runPipelineFromDetail(){
+  if(!detailPid)return;
+  try{
+    await fetch(`/api/projects/${detailPid}/files`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({requirements:document.getElementById('d_requirements').value,
+                           regression:document.getElementById('d_regression').value})});
+  }catch(e){}
+  const useAgentic=!!(document.getElementById('cbAgentic')&&document.getElementById('cbAgentic').checked);
+  const useLlm=useAgentic||!!(document.getElementById('cbLlm')&&document.getElementById('cbLlm').checked);
+  const pid=detailPid;
+  closeDetail();
+  exec(pid,'run',{llm:useLlm,agentic:useAgentic});
 }
 function pollTask(tid){
   const panel=document.getElementById('logPanel');
