@@ -261,6 +261,8 @@ jobs:
           MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: |
+          # download-artifact 是 continue-on-error，制品缺失时目录可能压根没建出来
+          mkdir -p ci-artifacts
           SUMMARY=ci-artifacts/gate_summary.txt
           if [ -f "$SUMMARY" ]; then
             {
