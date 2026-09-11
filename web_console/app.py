@@ -234,6 +234,7 @@ def api_projects() -> Any:
             "perf_security": _read_perf_security(pdir),
             "web": _read_web(pdir),
             "quality": pm._read_quality(pdir),
+            "defects": pm._read_defects(pdir),
             "disabled": pm.is_disabled(pdir),
         })
     return jsonify({"projects": items})
@@ -259,6 +260,8 @@ def api_project_files(pid: str) -> Any:
         out[key] = f.read_text(encoding="utf-8") if f.is_file() else ""
     cases = pdir / "artifacts" / "cases.md"
     out["cases"] = cases.read_text(encoding="utf-8") if cases.is_file() else ""
+    defects_md = pdir / "artifacts" / "defects.md"
+    out["defects"] = defects_md.read_text(encoding="utf-8") if defects_md.is_file() else ""
     ps_file = pdir / "artifacts" / "perf_security.json"
     perf_sec: Optional[Dict[str, Any]] = None
     if ps_file.is_file():

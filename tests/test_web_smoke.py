@@ -726,3 +726,35 @@ def test_cases_endpoint_merge_run_meta_keeps_other_gates(monkeypatch, tmp_path):
     meta = web_app.pm._read_run_meta(proj)
     assert meta["web"]["all_pass"] is False      # 保留
     assert meta["mode"] != "旧模式"               # 已更新为本次模式
+
+
+def test_files_api_exposes_defects(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "defects.md").write_text("# 待提交缺陷（草稿）\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert "待提交缺陷" in d["files"]["defects"]
+
+
+def test_projects_api_exposes_defects(monkeypatch, tmp_path):
+    """项目卡徽标用：没跑过的项目是 None，不是缺字段。"""
+    proj = _mk_tmp_project(tmp_path)
+    art = proj / "artifacts"
+    art.mkdir()
+    (art / "defects.json").write_text(
+        '{"counts": {"total": 2, "by_severity": {"S1": 1, "S2": 1, "S3": 0, "S4": 0}},'
+        ' "items": []}', encoding="utf-8")
+    _mk_tmp_project(tmp_path, "empty")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = {p["pid"]: p for p in client.get("/api/projects").get_json()["projects"]}
+    assert items["demo"]["defects"]["counts"]["total"] == 2
+    assert items["empty"]["defects"] is None
+
+
+def test_index_has_defects_tab_and_badge():
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-tab="defects"' in html
+    assert "d_defects" in html
+    assert "待确认缺陷" in html

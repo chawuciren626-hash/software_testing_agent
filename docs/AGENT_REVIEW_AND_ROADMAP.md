@@ -161,6 +161,14 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 ### Phase 2 — 自主进化（约 3 周）
 - [ ] 情景记忆回灌：失败根因 → 重点覆盖清单 → 用例自优化。
 - [x] O3 门禁结果摘要 + 失败通知：`extensions/reporting/gate_notify.py`（三态判定：通过/未通过/未执行；未执行不算绿）。自动建 Issue 未做。
+- [x] **失败项 → 缺陷草稿**：`extensions/reporting/defects.py` —— 把三道门禁的失败项整理成
+      **可提交的缺陷单**（编号 / 建议级别 / 复现步骤 / 实际 / 期望 / 证据），
+      落 `artifacts/defects.md` + `.json`；CLI `defects <id>` 可按最近一次结果重算（不重跑）。
+      三条克制：① **不自动提单**（自动建单是噪音，且创建容易删除难）；
+      ② **级别只是建议**（安全 FAIL=S1 / 主流程 FAIL=S2 / 性能与抖动=S3，定级权在人）；
+      ③ **环境问题与配置问题不算缺陷**（SKIP、基线未通过、非法定位器 → 单独列出，
+      把"服务没起"报成缺陷最伤信任）。接入报告 / 看板 / 控制台「缺陷草稿」页。
+      实测：zz-fail 项目 2 条 FAIL → 2 条 S2 草稿，复现步骤含接口与环境。
 - [x] **L3 评测常态化**：`extensions/requirements_to_cases/case_quality.py` —— 每次 run 自动算
       **用例结构质量分**（需求覆盖/三类齐备/可执行性/具体性/去重，加权 0-100），
       落 `artifacts/quality.json` + `quality_history.jsonl`，报告/看板/控制台展示**总分与趋势**。

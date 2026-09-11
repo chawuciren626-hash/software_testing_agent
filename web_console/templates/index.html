@@ -579,6 +579,7 @@ svg{display:block;}
       <button class="btn tab sm" data-tab="perfsec" onclick="switchTab('perfsec')">性能与安全</button>
       <button class="btn tab sm" data-tab="web" onclick="switchTab('web')">Web 冒烟</button>
       <button class="btn tab sm" data-tab="quality" onclick="switchTab('quality')">用例质量</button>
+      <button class="btn tab sm" data-tab="defects" onclick="switchTab('defects')">缺陷草稿</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
@@ -587,6 +588,7 @@ svg{display:block;}
     <div id="d_perfsec" class="ps-panel" style="display:none"></div>
     <div id="d_web" class="ps-panel" style="display:none"></div>
     <div id="d_quality" class="ps-panel" style="display:none"></div>
+    <textarea id="d_defects" class="mono" style="display:none" readonly></textarea>
     <textarea id="d_webyaml" class="mono" style="display:none"></textarea>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
@@ -904,12 +906,23 @@ async function renderProjects(){
                 `\n结构分只反映形式完整性，不代表用例质量好坏；看趋势而非绝对值。`;
       qBadge=`<span class="badge ${qcls}" title="${esc(tip)}">${svg('doc')} 结构分 ${qt} ${dTxt}</span>`;
     }
+    // 待提交缺陷草稿：只报数、不提单（自动建单会产生噪音，且创建容易、删除难）
+    const dfb=p.defects;
+    let defBadge='';
+    if(dfb && (dfb.counts||{}).total){
+      const n=(dfb.counts||{}).total, sev=(dfb.counts||{}).by_severity||{};
+      const tip2='待确认缺陷 '+n+' 条（S1 '+(sev.S1||0)+' / S2 '+(sev.S2||0)+
+                 ' / S3 '+(sev.S3||0)+' / S4 '+(sev.S4||0)+'）'+
+                 '\n严重程度为规则推断的建议值，提交前请人工复核；环境问题与配置问题不计入。';
+      defBadge=`<span class="badge ${(sev.S1||0)?'bad':'skip'}" title="${esc(tip2)}">`+
+               `${svg('doc')} 待确认缺陷 ${n}</span>`;
+    }
     const div=document.createElement('div');
     div.className='card'+(p.disabled?' disabled':'');
     const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
     div.innerHTML=`
       <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}${qBadge}</div></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}${qBadge}${defBadge}</div></div>
       <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
       <div class="ops">
         <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
@@ -1836,6 +1849,7 @@ async function openDetail(pid){
   document.getElementById('d_requirements').value=d.files.requirements||'（暂无 requirements.md）';
   document.getElementById('d_regression').value=d.files.regression||'（暂无 regression.yaml）';
   document.getElementById('d_cases').value=d.files.cases||'（尚未生成用例，请先跑一次全流程）';
+  document.getElementById('d_defects').value=d.files.defects||'（尚未生成缺陷草稿：跑一次「全流程」或「核心回归」后自动生成。\n注意：环境问题与配置问题不会被当成缺陷。）';
   document.getElementById('d_webyaml').value=d.files.web||'（暂无 web.yaml：可点「保存需求与配置」创建空文件，或按 extensions/web_testing/run_web.py 文件头的示例手写场景）';
   window.__runMeta=d.run_meta||null;   // 上次运行的生成方式（模式/是否注入易错点），供「已生成用例」页提示
   // 拉取情景记忆（P2 历史失败根因 / 重点覆盖清单）
@@ -1867,7 +1881,7 @@ async function openDetail(pid){
   document.getElementById('detailMask').classList.add('show');
 }
 function switchTab(tab){
-  ['requirements','regression','cases','lessons','perfsec','web','quality'].forEach(t=>{
+  ['requirements','regression','cases','lessons','perfsec','web','quality','defects'].forEach(t=>{
     const el=document.getElementById('d_'+t);
     el.style.display = t===tab ? (t==='perfsec'?'block':'block') : 'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);

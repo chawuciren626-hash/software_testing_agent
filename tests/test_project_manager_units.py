@@ -485,3 +485,50 @@ def test_merge_run_meta_works_without_existing_file(tmp_path):
     pdir.mkdir()
     pm._merge_run_meta(pdir, mode="规则版")
     assert pm._read_run_meta(pdir)["mode"] == "规则版"
+
+
+# ---------- 缺陷草稿（把"流水线上的红"变成能提交给开发的缺陷单） ----------
+
+def test_step_defects_writes_files(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    reg = {"results": [{"name": "登录", "method": "POST", "url": "/login",
+                        "status_code": 500, "expect": "200", "result": "FAIL",
+                        "detail": "服务端异常"}],
+           "total": 1, "passed": 0, "failed": 1, "skipped": 0, "all_pass": False}
+    dp = pm._step_defects("demo", pdir, reg, "http://x")
+    assert (pdir / "artifacts" / "defects.md").is_file()
+    assert (pdir / "artifacts" / "defects.json").is_file()
+    assert dp["counts"]["total"] == 1
+    assert pm._read_defects(pdir)["items"][0]["severity"] == "S2"
+
+
+def test_step_defects_no_failures(tmp_path):
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    reg = {"results": [{"name": "登录", "result": "PASS"}], "total": 1,
+           "passed": 1, "failed": 0, "skipped": 0, "all_pass": True}
+    assert pm._step_defects("demo", pdir, reg)["counts"]["total"] == 0
+
+
+def test_report_renders_defects_card_and_env_section(tmp_path):
+    """报告要出现缺陷卡片；环境问题必须**单列**并明确说不是缺陷。"""
+    pdir = tmp_path / "p"
+    pdir.mkdir()
+    (pdir / "project.yaml").write_text("project_id: demo\n", encoding="utf-8")
+    reg = {"results": [
+        {"name": "登录", "method": "POST", "url": "/login", "status_code": 500,
+         "expect": "200", "result": "FAIL", "detail": "服务端异常"},
+        {"name": "列表", "result": "SKIP", "detail": "ConnectionError"},
+    ], "total": 2, "passed": 0, "failed": 1, "skipped": 1, "all_pass": False}
+    pm._step_defects("demo", pdir, reg, "http://x")
+    out = pm._step_report("demo", pdir, None, reg)
+    html = out.read_text(encoding="utf-8")
+    assert "待提交缺陷" in html
+    assert "不会自动提单" in html
+    assert "环境问题" in html and "不是缺陷" in html
+
+
+def test_build_parser_has_defects_command():
+    args = pm.build_parser().parse_args(["defects", "demo"])
+    assert args.func is pm.cmd_defects

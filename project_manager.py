@@ -938,6 +938,91 @@ def _web_card_html(wf: Dict[str, Any]) -> str:
     )
 
 
+def _step_defects(pid: str, pdir: Path, reg: Dict[str, Any],
+                  base_url: str = "") -> Optional[Dict[str, Any]]:
+    """把失败的门禁项整理成**缺陷草稿**（`artifacts/defects.md` / `.json`）。
+
+    性能安全与 Web 结论从既有产物读（这两道是可选步骤，可能没跑），
+    因此"只跑回归"也能拿到缺陷草稿。
+    """
+    sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+    import defects as df  # noqa: E402
+
+    payload = df.build_defects(reg, _read_perf_security(pdir), _read_web(pdir),
+                               pid=pid, base_url=base_url)
+    df.write_defects(pdir, payload)
+    n = payload["counts"]["total"]
+    env_n = payload["counts"]["env"]
+    if n:
+        print(f"  [缺陷草稿] {n} 条待确认（S1 "
+              f"{payload['counts']['by_severity']['S1']} / S2 "
+              f"{payload['counts']['by_severity']['S2']} / S3 "
+              f"{payload['counts']['by_severity']['S3']}） -> artifacts/{df.DEFECTS_MD}")
+    else:
+        print(f"  [缺陷草稿] 本次无产品缺陷（{df.DEFECTS_MD} 已更新）")
+    if env_n:
+        # 环境问题单列，不混进缺陷清单 —— 把环境没起报成缺陷最伤信任
+        print(f"  [缺陷草稿] 另有 {env_n} 项环境问题（已单列，不按缺陷处理）")
+    return payload
+
+
+def _read_defects(pdir: Path) -> Optional[Dict[str, Any]]:
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+        import defects as df  # noqa: E402
+    except Exception:
+        return None
+    return df.read_defects(pdir)
+
+
+def _defects_card_html(dp: Dict[str, Any]) -> str:
+    """报告里的「待提交缺陷」卡片：清单 + 级别建议 + 环境问题单列。"""
+    items = dp.get("items") or []
+    counts = dp.get("counts") or {}
+    by_sev = counts.get("by_severity") or {}
+
+    def _sev_tag(s: str) -> str:
+        cls = {"S1": "bad", "S2": "bad", "S3": "warn"}.get(s, "skip")
+        return f"<span class='tag {cls}'>{s}</span>"
+
+    if not items:
+        body = ("<div class='reg-empty'>本次执行没有发现需要提交的产品缺陷。"
+                + (f"<br>另有 {counts.get('env', 0)} 项环境问题（见下方，不按缺陷处理）。"
+                   if counts.get("env") else "")
+                + "</div>")
+    else:
+        rows = "".join(
+            f"<tr><td class='name'>{_h(d.get('id'))}</td>"
+            f"<td>{_sev_tag(str(d.get('severity', 'S4')))}</td>"
+            f"<td>{_h(d.get('source'))}</td>"
+            f"<td class='name'>{_h(d.get('title'))}</td>"
+            f"<td class='actual'>{_h(d.get('actual'))}</td>"
+            f"<td class='detail'>{_h(d.get('evidence') or d.get('severity_reason', ''))}</td></tr>"
+            for d in items)
+        body = ("<div class='table-wrap'><table class='reg-table'>"
+                "<thead><tr><th>编号</th><th>建议级别</th><th>来源</th><th>标题</th>"
+                "<th>实际</th><th>说明</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table></div>")
+
+    env_html = ""
+    if dp.get("env_issues"):
+        env_html = ("<div class='ps-note warn'><b>环境问题（不是缺陷，别提单）：</b><ul>"
+                    + "".join(f"<li>{_h(x)}</li>" for x in dp["env_issues"]) + "</ul></div>")
+    cfg_html = ""
+    if dp.get("config_issues"):
+        cfg_html = ("<div class='ps-note warn'><b>配置问题（不是缺陷，改配置即可）：</b><ul>"
+                    + "".join(f"<li>{_h(x)}</li>" for x in dp["config_issues"]) + "</ul></div>")
+
+    return f"""<div class='card'>
+  <div class='card-title'>待提交缺陷（草稿） <span class='count'>{_h(dp.get('generated_at', ''))}</span></div>
+  {body}
+  <div class='ps-sub'>严重程度是<b>规则推断的建议值</b>，提交前请按业务影响人工复核；
+    本卡片<b>不会自动提单</b>。完整草稿见 <code>artifacts/defects.md</code>（可直接粘进缺陷系统）。</div>
+  {env_html}
+  {cfg_html}
+</div>"""
+
+
 def _quality_card_html(q: Dict[str, Any]) -> str:
     """用例结构质量分卡片：总分 + 维度条 + 环比 + 趋势 sparkline + 未计分说明。
 
@@ -1104,6 +1189,10 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
                     f"{'通过' if _w_ok else '未通过'}</span></div>")
         web_card_html = _web_card_html(_wf)
 
+    # 待提交缺陷草稿（把"流水线上的红"变成能提交给开发的缺陷单）
+    _dp = _read_defects(pdir)
+    defects_card_html = _defects_card_html(_dp) if _dp else ""
+
     # 用例结构质量分（执行过需求→用例才有；只做展示与趋势，不做硬门禁）
     _q = _read_quality(pdir)
     quality_item = ""
@@ -1261,6 +1350,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 
 {web_card_html}
 
+{defects_card_html}
+
 {quality_card_html}
 
 <div class='card'>
@@ -1396,6 +1487,12 @@ def cmd_run(args: argparse.Namespace) -> None:
     run_store.insert_snapshot(args.id, reg, trigger="run")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
 
+    # 缺陷草稿：把"流水线上的红"整理成能提交给开发的缺陷单（不自动提单）
+    try:
+        _step_defects(args.id, pdir, reg, base_url)
+    except Exception as e:      # 草稿生成失败不能拖垮主流程
+        print(f"  [缺陷草稿] 生成失败（不影响流程）：{e}", file=sys.stderr)
+
     _step_report(args.id, pdir, cases, reg)
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
 
@@ -1423,7 +1520,35 @@ def cmd_regression(args: argparse.Namespace) -> None:
     run_store.insert_snapshot(args.id, reg, trigger="regression")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
 
+    # 缺陷草稿：只跑回归也该拿到（性能安全/Web 结论从既有产物读，没跑就没有）
+    try:
+        _step_defects(args.id, pdir, reg, base_url)
+    except Exception as e:      # 草稿生成失败不能影响门禁退出码
+        print(f"  [缺陷草稿] 生成失败（不影响门禁）：{e}", file=sys.stderr)
+
     sys.exit(0 if reg["all_pass"] else 1)
+
+
+def cmd_defects(args: argparse.Namespace) -> None:
+    """按最近一次门禁结果重算缺陷草稿（不重跑测试）。
+
+    只做**整理**，不重跑、不提单 —— 改了缺陷描述想重新生成时用它。
+    """
+    meta = load_project(args.id)
+    pdir = PROJECTS_DIR / args.id
+    base_url = (meta.get("env", {}) or {}).get("base_url", "")
+    sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
+    import defects as df  # noqa: E402
+
+    reg = _read_regression(pdir)
+    if not reg:
+        print(f"⚠ {args.id} 尚未执行过核心回归，缺陷草稿只会有性能安全/Web 两道的结论。")
+    payload = _step_defects(args.id, pdir, reg, base_url)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print()
+        print((pdir / "artifacts" / df.DEFECTS_MD).read_text(encoding="utf-8"))
 
 
 def cmd_rerun(args: argparse.Namespace) -> None:
@@ -1501,6 +1626,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             "ps": _read_perf_security(pdir),   # ④ 性能与安全冒烟（可能未执行）
             "web": _read_web(pdir),            # ⑤ Web UI 冒烟（可能未执行）
             "quality": _read_quality(pdir),    # 用例结构质量分（可能未执行）
+            "defects": _read_defects(pdir),    # 缺陷草稿（可能未执行）
         })
 
     print(f"== 跨项目总览（{len(rows)} 个项目）==")
@@ -1525,6 +1651,14 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
         if wf:
             wg = "✅ 通过" if wf.get("all_pass") else "❌ 未通过"
             print(f"  {'':<16}{'':<22}Web UI：{wg} · {wf.get('summary', '')}")
+        df = r.get("defects")
+        if df and (df.get("counts") or {}).get("total"):
+            c = df["counts"]
+            print(f"  {'':<16}{'':<22}待确认缺陷：{c['total']} 条"
+                  f"（S1 {c['by_severity'].get('S1', 0)} / S2 {c['by_severity'].get('S2', 0)}"
+                  f" / S3 {c['by_severity'].get('S3', 0)}）· 草稿见 artifacts/defects.md")
+            if c.get("env"):
+                print(f"  {'':<16}{'':<22}另有 {c['env']} 项环境问题（已单列，不按缺陷处理）")
         q = r.get("quality")
         if q and q.get("total") is not None:
             d = q.get("delta")
@@ -1585,6 +1719,17 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             else:
                 q_badge = (f"<span style='color:#047857'>↑{d}</span>" if d > 0
                            else f"<span style='color:#b91c1c'>↓{abs(d)}</span>")
+        # 待确认缺陷草稿：只报数不提单；环境问题/配置问题不计入
+        df = r.get("defects")
+        if not df or not (df.get("counts") or {}).get("total"):
+            df_detail = "<span class='muted'>—</span>"
+        else:
+            c = df["counts"]
+            sev = c.get("by_severity") or {}
+            df_detail = (f"<b style='color:#b91c1c'>{c['total']}</b> 条"
+                         + (f" · S1 {sev.get('S1', 0)}" if sev.get("S1") else "")
+                         + (f"<br><a href='projects/{_h(r['pid'])}/artifacts/defects.md'>"
+                            "缺陷草稿</a>" if True else ""))
         trs.append(
             f"<tr class='{cls}'><td><b>{_h(r['pid'])}</b></td>"
             f"<td>{_h(r['name'])}</td><td>{_h(r['owner'])}</td>"
@@ -1593,6 +1738,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             f"<td>{ps_detail}</td><td class='gate-cell'>{ps_badge}</td>"
             f"<td>{web_detail}</td><td class='gate-cell'>{web_badge}</td>"
             f"<td>{q_detail}</td><td class='gate-cell'>{q_badge}</td>"
+            f"<td>{df_detail}</td>"
             f"<td><a href='projects/{_h(r['pid'])}/artifacts/report.html'>项目报告</a></td></tr>"
         )
 
@@ -1611,8 +1757,9 @@ td.gate-cell{{font-weight:700;white-space:nowrap;}}
 </head><body>
 <h1>跨项目测试总览</h1>
 <div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟 / Web UI 冒烟 / 用例结构质量分</div>
+<div class='meta'>「待确认缺陷」由失败项整理而成，严重程度是<b>规则推断的建议值</b>，需人工复核后提交；环境问题与配置问题<b>不计入</b>。</div>
 <div class='meta'>「用例结构分」只反映形式完整性（覆盖/三类/可执行/具体/去重），<b>不是质量判定、也不做门禁</b>；看它的<b>趋势</b>——分数突然下跌说明生成环节可能退化。</div>
-<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>Web UI</th><th>门禁</th><th>用例结构分</th><th>环比</th><th>明细</th></tr>
+<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>Web UI</th><th>门禁</th><th>用例结构分</th><th>环比</th><th>待确认缺陷</th><th>明细</th></tr>
 {''.join(trs)}
 </table>
 <div class='meta'>重新生成：python project_manager.py dashboard · 性能与安全冒烟：python project_manager.py perf-security &lt;项目ID&gt; · Web UI 冒烟：python project_manager.py web &lt;项目ID&gt;</div>
@@ -1734,6 +1881,11 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--users", type=int, help="并发数（覆盖 project.yaml 中的配置）")
     ps.add_argument("--iterations", type=int, help="每用户请求次数（覆盖配置）")
     ps.set_defaults(func=cmd_perf_security)
+
+    df = sub.add_parser("defects", help="把失败的门禁项整理成可提交的缺陷草稿（不自动提单）")
+    df.add_argument("id")
+    df.add_argument("--json", action="store_true", help="输出 JSON 而非 Markdown")
+    df.set_defaults(func=cmd_defects)
 
     wb = sub.add_parser("web", help="Web UI 冒烟（Playwright 声明式场景，独立于核心回归）")
     wb.add_argument("id")
