@@ -14,7 +14,7 @@
 
 - **统一项目登记与多项目治理**：一个 `project_manager` 命令管理公司内所有被测项目（元数据 / 测试环境 / 认证 / 需求 / 回归清单）。
 - **接口自动化（零 LLM 依赖）**：`extensions/api_testing` 基于 `pytest + requests`，不需要任何 LLM Key 即可独立跑通；被测服务不可达时自动跳过，不污染结果。
-- **需求 → 测试用例生成**：`extensions/requirements_to_cases` 提供零依赖的规则版生成器（按关键词拆需求草稿），可选接入 LLM 做增强。
+- **需求 → 测试用例生成**：`extensions/requirements_to_cases` 提供零依赖的规则版生成器（按关键词拆需求草稿）；可选接入 **LLM 增强**（`--llm`），**默认走 OpenAI 兼容协议（DeepSeek / 通义千问 / 智谱 GLM / Kimi / 本地 Ollama 等）**，也可切到 Gemini；**任何失败（缺 key / 限流 / 网络）都会自动降级规则版**，绝不中断流水线。
 - **核心业务回归 + 门禁**：声明式回归清单（`api_smoke` / `pytest_marker` / `pytest_node`），环境不可达导致全 SKIP 时**不判绿**，避免 CI 假绿。
 - **可视化 Web 控制台**：`web_console`（Flask + 原生前端），含项目 / 任务 / 自动化 / 资料库 / 技能 / 模型维护 6 大页面，报告弹窗内可查看分组用例卡片与回归结果。
 - **报告增强**：失败原因聚类、新增/老毛病标记、跨项目趋势对比、不稳定场景洞察。
@@ -71,7 +71,7 @@ playwright install chromium     # 仅需 Web 探索/自动化时
 
 ### 3. 配置（复制示例并填入你的值）
 ```bash
-cp .env.example .env            # 填入 ANTHROPIC_API_KEY / GOOGLE_API_KEY（可选，接口自动化不需要）
+cp .env.example .env            # 填入 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL（需求→用例增强用，可选；接口自动化不需要）
 cp config.yaml.example config.yaml
 cp mcp_servers.json.example mcp_servers.json
 ```
@@ -90,6 +90,7 @@ python project_manager.py create        # 交互式新建项目
 python project_manager.py list           # 列出已接入项目
 python project_manager.py info <id>      # 查看项目详情
 python project_manager.py run <id>       # 全流程：需求→用例→接口→回归→报告
+python project_manager.py run <id> --llm  # 全流程，且需求→用例采用 LLM 智能生成（默认 OpenAI 兼容，失败自动降级规则版）
 python project_manager.py regression <id># 仅核心业务回归
 python project_manager.py rerun <id> --scene <场景名>  # 重跑单个核心场景
 python project_manager.py dashboard      # 生成跨项目总览看板
@@ -117,10 +118,46 @@ python project_manager.py dashboard      # 生成跨项目总览看板
 ## 🧩 扩展模块（`extensions/`）
 
 - **api_testing**：`pytest + requests` 接口自动化，声明式 `expect_json`（支持点路径与 `__not_null__`），服务不可达自动 skip。
-- **requirements_to_cases**：把 `requirements.md` 按规则拆成用例草稿（功能/边界/异常 + 优先级 + 可自动化标记），无需 LLM。
+- **requirements_to_cases**：把 `requirements.md` 按规则拆成用例草稿（功能/边界/异常 + 优先级 + 可自动化标记），无需 LLM；加 `--llm` 可走 LLM 增强。**默认 provider=openai**（OpenAI 兼容协议），配置 `LLM_API_KEY` + `LLM_BASE_URL` + `LLM_MODEL` 即可用 DeepSeek / 通义千问 / 智谱 GLM / Kimi 等；设 `LLM_PROVIDER=gemini` + `GOOGLE_API_KEY` 则走 Gemini（可用 `GEMINI_MODEL` / `GEMINI_API_BASE` 覆盖）；任何失败自动降级规则版。
 - **reporting**：生成项目级 HTML 报告（分组用例卡片 + 回归表格 + 门禁状态）。
 - **perf_security**：性能 / 安全探索测试骨架（待 LLM Key 后串联）。
 - **regression**：核心业务回归执行与单场景重跑合并。
+
+---
+
+## 🤖 多模型接入（需求→用例 LLM 增强）
+
+需求 → 用例的 LLM 增强**不绑定任何厂商**，通过环境变量选择模型，且失败永远降级规则版：
+
+| 环境变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `openai`（默认）或 `gemini` | `openai` |
+| `LLM_API_KEY` | OpenAI 兼容平台 key（本地 Ollama 可省略） | 空 |
+| `LLM_BASE_URL` | OpenAI 兼容 endpoint 的 base，如 `https://api.deepseek.com/v1`、`http://localhost:11434/v1` | OpenAI 官方 |
+| `LLM_MODEL` | 模型名，如 `deepseek-chat`、`qwen-plus`、`glm-4-flash`、`moonshot-v1-8k` | `deepseek-chat` |
+| `GOOGLE_API_KEY` / `GEMINI_MODEL` / `GEMINI_API_BASE` | 仅 `LLM_PROVIDER=gemini` 时使用 | - |
+
+**常用接入示例：**
+
+```bash
+# 1) DeepSeek（OpenAI 兼容，便宜、国内稳定）
+LLM_PROVIDER=openai LLM_API_KEY=sk-xxx LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-chat \
+  python project_manager.py run <id> --llm
+
+# 2) 通义千问 Qwen / 智谱 GLM / Kimi：仅换 BASE_URL 与 MODEL 即可
+#    Qwen:   LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1  LLM_MODEL=qwen-plus
+#    GLM:    LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4            LLM_MODEL=glm-4-flash
+#    Kimi:   LLM_BASE_URL=https://api.moonshot.cn/v1                       LLM_MODEL=moonshot-v1-8k
+
+# 3) 本地 Ollama（完全离线、零 key）
+LLM_PROVIDER=openai LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=llama3 \
+  python generate_cases.py --input req.md --llm
+
+# 4) 仍想用 Gemini
+LLM_PROVIDER=gemini GOOGLE_API_KEY=xxx python project_manager.py run <id> --llm
+```
+
+> 切换模型**只需改环境变量**，代码无需改动；Web 控制台「模型维护」页可查看当前 provider 与 key 配置状态。
 
 ---
 

@@ -197,8 +197,16 @@ def api_project_files(pid: str) -> Any:
 
 
 def _llm_available() -> bool:
-    """是否配置了 LLM key（决定需求→用例能否走智能生成）。"""
-    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    """LLM 增强是否可用：取决于当前 provider 是否已配置 key 或本地 base。
+
+    见 generate_cases.llm_configured()。
+    """
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import generate_cases as gc  # noqa: E402
+    except Exception:
+        return False
+    return gc.llm_configured()
 
 
 @app.get("/api/llm/status")
@@ -219,6 +227,7 @@ def api_project_cases(pid: str) -> Any:
         return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
 
     data = request.get_json(silent=True) or {}
+    use_llm = bool(data.get("llm"))
     if isinstance(data.get("requirements"), str):
         (pdir / "requirements.md").write_text(data["requirements"], encoding="utf-8")
 
@@ -229,22 +238,22 @@ def api_project_cases(pid: str) -> Any:
     try:
         sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
         import generate_cases as gc  # noqa: E402
-        items = gc.parse_requirements(req_file.read_text(encoding="utf-8"))
-        if not items:
-            return jsonify({"ok": False,
-                            "error": "未解析到需求条目，请用编号或 - / * 项目符号书写需求"}), 400
-        cases = gc.gen_cases(items)
+        text = req_file.read_text(encoding="utf-8")
+        md = gc.generate_from_text(text, use_llm=use_llm, source=str(req_file))
+        items = gc.parse_requirements(text)
         out = pdir / "artifacts" / "cases.md"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(gc.to_markdown(cases, str(req_file)), encoding="utf-8")
+        out.write_text(md, encoding="utf-8")
     except Exception as e:  # 生成失败不能把服务打挂
         return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
 
+    _, case_rows = pm._parse_cases(md)
     return jsonify({
         "ok": True,
         "requirements": len(items),
-        "cases": len(cases),
+        "cases": len(case_rows),
         "markdown": out.read_text(encoding="utf-8"),
+        "llm_used": use_llm and _llm_available(),
         "llm_available": _llm_available(),
     })
 
@@ -617,11 +626,17 @@ def api_models_get() -> Any:
             cfg = json.loads(MODELS_FILE.read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
+    provider = os.environ.get("LLM_PROVIDER", "openai")
     return jsonify({
         "config": cfg,
+        "provider": provider,
+        "model": os.environ.get("LLM_MODEL", "") or cfg.get("model", ""),
+        "base_url": os.environ.get("LLM_BASE_URL", "") or cfg.get("base_url", ""),
         "keys": {
+            "llm_configured": gc.llm_configured(),
+            "openai": bool(os.environ.get("LLM_API_KEY")),
+            "gemini": bool(os.environ.get("GOOGLE_API_KEY")),
             "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
-            "google": bool(os.environ.get("GOOGLE_API_KEY")),
         },
     })
 
@@ -630,7 +645,7 @@ def api_models_get() -> Any:
 def api_models_save() -> Any:
     data = request.get_json(silent=True) or {}
     cfg = {
-        "provider": str(data.get("provider", "anthropic")),
+        "provider": str(data.get("provider", "openai")),
         "model": str(data.get("model", "")).strip(),
         "base_url": str(data.get("base_url", "")).strip(),
     }
