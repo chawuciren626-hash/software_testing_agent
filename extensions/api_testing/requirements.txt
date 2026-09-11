@@ -1,3 +1,7 @@
 requests>=2.31
 pytest>=8.0
-pytest-allure>=2.13
+# ⚠️ Allure 的 pytest 插件包名是 allure-pytest。
+# 写 pytest-allure 会让 Install 直接失败（PyPI 上不存在该包名），
+# 而 CI 的安装步骤一旦失败，后面所有测试都不会跑 —— 表现为"流水线红了但没有任何测试结论"，
+# 排查时极易误判成代码问题。这个坑本项目踩过一次，勿改回。
+allure-pytest>=2.13

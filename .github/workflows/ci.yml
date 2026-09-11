@@ -1,0 +1,277 @@
+name: CI
+
+# 为什么这个文件在仓库根：
+# GitHub Actions **只读 `.github/workflows/`**。此前流水线模板放在
+# `extensions/reporting/.github/workflows/test.yml`，位置不对 → 从来没有真正跑过，
+# 于是路线图里"验收：CI 跑通"这条其实一直是未验证状态。
+# 模板已删除（它用 `|| true` 吞掉 pytest 失败，与项目"环境不可达不判绿"的口径直接冲突），
+# 能力全部移植到本文件。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次未跑完的运行，避免排队堆积
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # ① 产品单测 —— 硬门禁（失败即红）
+  # ---------------------------------------------------------------------------
+  # 只跑本仓库自有的代码（extensions/ project_manager web_console tests/eval），
+  # 这部分零 LLM 依赖、不依赖被测后端，所以能给出稳定、可信的结论。
+  unit-tests:
+    name: 产品单测（硬门禁）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 安装 Playwright Chromium（⑤ Web 冒烟的真实浏览器用例需要）
+        run: python -m playwright install --with-deps chromium
+
+      - name: 运行产品单测与评测基线
+        # 注意：这里**不能**加 `|| true`。吞掉测试失败 = 门禁形同虚设，
+        # 与项目「环境不可达不判绿 / 无断言不算绿」的防假绿原则直接冲突。
+        run: |
+          python -m pytest \
+            tests/test_project_manager_units.py \
+            tests/test_regression_gate.py \
+            tests/test_perf_security.py \
+            tests/test_web_testing.py \
+            tests/test_web_smoke.py \
+            tests/test_lessons.py \
+            tests/test_gemini_cases.py \
+            tests/test_gate_notify.py \
+            tests/eval \
+            -q
+
+      - name: 生成接口测试的 Allure 原始结果
+        # 服务不可达时用例自动 skip，不污染结论；仅用于产出报告制品
+        run: python -m pytest extensions/api_testing --alluredir=allure-results -q
+
+      - name: 安装 Allure CLI
+        run: npm install -g allure-commandline --silent
+
+      - name: 生成 Allure HTML 报告
+        if: always()
+        run: allure generate allure-results -o allure-report --clean
+
+      - name: 聚合 HTML 总览
+        if: always()
+        run: python extensions/reporting/generate_report.py
+
+      - name: 上传测试报告制品
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            allure-results
+            allure-report
+            test_report_index.html
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # ② 基座遗留测试 —— 非门禁（允许失败，只为可见性）
+  # ---------------------------------------------------------------------------
+  # 这些用例属于 fork 的上游基座（LangGraph/LLM 相关），不是本项目交付的代码，
+  # 且在 Python 3.13 下存在 aiohttp/ssl 初始化失败等已知问题。
+  # 因此单独成作业、标记「非门禁」，**不计入任何门禁结论**，避免拿第三方代码问题卡交付。
+  base-tests:
+    name: 基座遗留测试（非门禁）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装基座依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: 运行基座测试（失败不影响门禁）
+        run: |
+          python -m pytest tests \
+            --ignore=tests/test_config.py \
+            --ignore=tests/test_context_disclosure.py \
+            --ignore=tests/test_llm.py \
+            -q -p no:randomly
+
+  # ---------------------------------------------------------------------------
+  # ③ 项目级门禁（核心回归 / 性能安全 / Web 冒烟）
+  # ---------------------------------------------------------------------------
+  # 需要真实被测环境。**未配置时不静默判绿**：显式打印跳过原因并加一条 GitHub 警告。
+  # 配置方式（仓库 Settings → Variables）：STA_PROJECT_ID、STA_GATE_BASE_URL
+  project-gates:
+    name: 项目级门禁
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 检查门禁环境是否已配置
+        id: cfg
+        run: |
+          if [ -z "${{ vars.STA_PROJECT_ID }}" ] || [ -z "${{ vars.STA_GATE_BASE_URL }}" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=项目级门禁未执行::未配置 STA_PROJECT_ID / STA_GATE_BASE_URL 仓库变量，本次未执行核心回归、性能安全与 Web 冒烟。注意：未执行 ≠ 通过。"
+            echo "未配置 STA_PROJECT_ID / STA_GATE_BASE_URL，跳过项目级门禁（未执行 ≠ 通过）。"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 登记待门禁项目
+        # projects/ 是运行期目录、不入库，所以 CI 的全新 checkout 里没有任何项目。
+        # 不登记就直接跑门禁 → 摘要里"未发现任何已接入项目" → 永远红且看不出原因。
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          APP_USERNAME: ${{ secrets.APP_USERNAME }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          python project_manager.py create \
+            --id "${{ vars.STA_PROJECT_ID }}" \
+            --name "CI 门禁（${{ vars.STA_PROJECT_ID }}）" \
+            --base-url "${{ vars.STA_GATE_BASE_URL }}" \
+            --owner ci --description "由 CI 自动登记，仅用于门禁执行" \
+            --auth-type "${{ vars.STA_AUTH_TYPE || 'none' }}" \
+            --login-url "${{ vars.STA_LOGIN_URL || '/admin/login' }}" \
+            --user-env APP_USERNAME --pass-env APP_PASSWORD --force
+
+      # 三道门禁都用 continue-on-error 收集**全部**结论后再统一判定：
+      # 若第一道失败就中断，就看不到其余两道的结果，排查又要重跑一遍。
+      - name: 核心业务回归
+        if: steps.cfg.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ vars.STA_GATE_BASE_URL }}
+          APP_USERNAME: ${{ secrets.APP_USERNAME }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: python project_manager.py regression ${{ vars.STA_PROJECT_ID }}
+
+      - name: 性能与安全冒烟
+        if: steps.cfg.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ vars.STA_GATE_BASE_URL }}
+          APP_USERNAME: ${{ secrets.APP_USERNAME }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: python project_manager.py perf-security ${{ vars.STA_PROJECT_ID }}
+
+      - name: Web UI 冒烟
+        if: steps.cfg.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ vars.STA_GATE_BASE_URL }}
+        run: python project_manager.py web ${{ vars.STA_PROJECT_ID }}
+
+      - name: 生成门禁摘要
+        # 无论是否配置了被测环境都要产出摘要：未执行也要说"未执行"，不能空着
+        if: always()
+        run: |
+          python extensions/reporting/gate_notify.py --dry-run --out gate_summary.txt \
+            ${{ vars.STA_PROJECT_ID && format('--project {0}', vars.STA_PROJECT_ID) || '' }}
+
+      - name: 门禁判定（读产物，任一未通过即失败）
+        # 这是本作业**唯一**的硬门禁：直接读 artifacts 里的真实结论，
+        # 因此上面三步即使被 continue-on-error 放过，也逃不过这里。
+        # --project 不能省：本次只跑了 STA_PROJECT_ID 这一个项目，
+        # 若把其余从未跑过的项目也算进来，它们全是「未执行」→ 门禁永远红。
+        if: steps.cfg.outputs.ready == 'true'
+        run: |
+          python extensions/reporting/gate_notify.py --dry-run --fail-on-gate \
+            --project "${{ vars.STA_PROJECT_ID }}"
+
+      - name: 上传门禁摘要与项目报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-summary
+          path: |
+            gate_summary.txt
+            projects/*/artifacts/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # ④ 通知（钉钉 + 163 邮件，含门禁摘要）
+  # ---------------------------------------------------------------------------
+  notify:
+    name: 通知
+    runs-on: ubuntu-latest
+    needs: [unit-tests, project-gates]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装通知依赖
+        run: pip install pyyaml
+
+      - name: 下载门禁摘要（上游作业产出）
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-summary
+          path: ci-artifacts
+
+      - name: 发送通知（钉钉 + 163 邮件）
+        # 本作业是全新 checkout，projects/ 下没有产物，重算只会得到
+        # "未发现任何已接入项目"这种没用的结论 —— 所以优先复用上游产出的摘要文件。
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_SECRET: ${{ secrets.DINGTALK_SECRET }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          SUMMARY=ci-artifacts/gate_summary.txt
+          if [ -f "$SUMMARY" ]; then
+            {
+              echo "软件测试智能体 · CI 门禁结果"
+              echo "单测（硬门禁）：${{ needs.unit-tests.result }}"
+              echo "项目级门禁：${{ needs.project-gates.result }}"
+              echo
+              cat "$SUMMARY"
+            } > ci-artifacts/final_summary.txt
+            python extensions/reporting/gate_notify.py --text-file ci-artifacts/final_summary.txt
+          else
+            echo "::warning title=门禁摘要缺失::未取到上游摘要文件，本次通知内容可能不完整。"
+            python extensions/reporting/gate_notify.py --dry-run
+          fi

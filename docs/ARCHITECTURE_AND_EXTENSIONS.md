@@ -38,9 +38,10 @@
 | 跨会话记忆 | Langmem 四级记忆 + 语义检索 + 程序性提示自优化 |
 
 **缺口（即我们要补的能力）**：
-1. ❌ 接口(API)自动化（基座只做 Web，无 REST 适配）
-2. ❌ 需求分析→用例（基座有 PR 分析，但无「需求文档→结构化用例」链路）
-3. ⚠️ 报告仅 Markdown（缺 Allure/HTML + CI 通知：钉钉/163 邮件）
+1. ✅ 接口(API)自动化（已补齐 `extensions/api_testing/`）
+2. ✅ 需求分析→用例（已补齐 `extensions/requirements_to_cases/`）
+3. ✅ 报告仅 Markdown（已补齐 HTML/Allure 聚合 + **真实生效的 CI**：`.github/workflows/ci.yml` +
+      钉钉/163 邮件通知 + `gate_notify.py` 门禁摘要三态判定）
 4. ✅ 性能/安全探索（已实现 `extensions/perf_security/run_perf_security.py`：线程池并发压测 + 6 项安全检查，接入 CLI/报告/看板/Web）
 5. ✅ Web 自动化（**声明式可门禁**那一半已补齐：`extensions/web_testing/run_web.py`。基座的 Web 探索是"给智能体用的"，缺少"给 CI 用的确定性回归"，两者互补）
 
@@ -52,7 +53,7 @@
 |---|---|---|---|
 | ①接口(API)自动化 | `config.yaml` 的 app/paths、MCP/Skills 机制 | `extensions/api_testing/` | pytest+requests 直连 mall-admin；`unique_suffix` fixture 数据隔离；产出可提交用例；并以 Skill 形式供智能体调用 |
 | ②需求分析→用例 | `missions/*.yaml`、`pr_analyzer.py` 思路 | `extensions/requirements_to_cases/` | 需求/PR → 结构化用例(等价类/边界值/场景法)；可经 LLM 或 Skill 生成；落地为 mission |
-| ③报告与CI增强 | `report_*/test_report.md` | `extensions/reporting/` | 聚合 Markdown → HTML/Allure；GitHub Actions + 钉钉 + 163 邮件（复用你 api_auto_demo 经验） |
+| ③报告与CI增强 | `report_*/test_report.md` | `extensions/reporting/` + `.github/workflows/ci.yml` | 聚合 Markdown → HTML/Allure；**根 workflow 才是真生效的**（GitHub 只读仓库根，旧模板放在扩展目录里从未执行过）；作业分硬门禁/非门禁两层；`gate_notify.py` 汇总三道门禁为**三态结论**（通过/未通过/未执行）后发钉钉 + 163 邮件（复用你 api_auto_demo 经验） |
 | ④性能/安全冒烟 | 适配器契约、`orchestration` 人格注册 | `extensions/perf_security/` | 性能：线程池并发（p50/p95/p99、错误率、吞吐、阈值门禁），不依赖 locust；安全：鉴权/注入/错误回显/响应头 6 项检查；三道闸门防假绿与假红（业务码判错、环境不可达不判绿、基线校验防假漏洞） |
 | ⑤Web UI 冒烟 | 基座 `tools/browser/engine.py` 的定位器策略（**只继承方法论，不共用执行路径**） | `extensions/web_testing/` | Playwright + 声明式 `web.yaml`；定位器优先级 `data-test-subj → aria-label → 可见文本 → role`，**运行时拒绝 XPath/位置选择器**；无断言的场景记 SKIP 不判绿；连接级错误（不可达）与 HTTP 4xx/5xx（产品缺陷）严格区分；失败留截图 + 可复现 `.spec.ts` |
 

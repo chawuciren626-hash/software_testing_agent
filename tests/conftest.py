@@ -4,7 +4,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（tests/ 的上级）
 for sub in ("", "web_console", "extensions/regression", "extensions/perf_security",
-           "extensions/web_testing", "extensions/requirements_to_cases", "tests/eval"):
+           "extensions/web_testing", "extensions/requirements_to_cases",
+           "extensions/reporting", "tests/eval"):
     p = os.path.join(ROOT, sub)
     if os.path.isdir(p) and p not in sys.path:
         sys.path.insert(0, p)

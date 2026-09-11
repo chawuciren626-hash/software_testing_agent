@@ -141,9 +141,15 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 > 原则：**保住现有确定性能力不退化，逐级叠加智能层，每级带评测与回滚。**
 
 ### Phase 0 — 质量地基（约 2 周，阻断级）
-- [ ] B1 评测基线：建 `tests/eval/` —— 用例质量 LLM-judge 脚本 + 门禁可靠性用例 + 报告渲染断言。
-- [ ] B2 产品单测：覆盖 `project_manager` 关键函数、`run_regression`、`_cases_html`、web 核心路由（用 Flask 测试客户端 + 内存 SQLite）。
-- [ ] S4 合并双入口：`software_testing_agent.py` → `project_manager run --pipeline`。
+- [x] B1 评测基线：建 `tests/eval/` —— 用例质量 LLM-judge 脚本 + 门禁可靠性用例 + 报告渲染断言。
+- [x] B2 产品单测：覆盖 `project_manager` 关键函数、`run_regression`、`_cases_html`、web 核心路由（用 Flask 测试客户端 + 内存 SQLite）。
+- [x] S4 合并双入口：`software_testing_agent.py` → `project_manager run --pipeline`。
+- [x] **CI 真正跑起来**：根目录 `.github/workflows/ci.yml`。
+      此前模板放在 `extensions/reporting/.github/workflows/`（GitHub **只读仓库根**）→ 从未执行过，
+      所以"验收：CI 跑通"实际一直是未验证状态；且旧模板用 `|| true` 吞掉 pytest 失败，与本项目
+      「环境不可达不判绿」的口径直接冲突 —— 模板已删除，能力全部移植到根 workflow。
+      作业划分：自有单测=硬门禁、基座遗留测试=非门禁（不拿第三方代码问题卡交付）、
+      项目级门禁=已配置环境才跑且**未配置时显式警告不静默判绿**、通知=复用上游摘要。
 - 验收：CI 跑通；门禁在"环境不可达"场景稳定判不绿。
 
 ### Phase 1 — 智能层接入（有 key 后，约 3 周）
@@ -154,14 +160,14 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 
 ### Phase 2 — 自主进化（约 3 周）
 - [ ] 情景记忆回灌：失败根因 → 重点覆盖清单 → 用例自优化。
-- [ ] O3 失败自动建 Issue/钉钉卡片（复用已有通知）。
+- [x] O3 门禁结果摘要 + 失败通知：`extensions/reporting/gate_notify.py`（三态判定：通过/未通过/未执行；未执行不算绿）。自动建 Issue 未做。
 - [ ] L3 评测常态化：每次 run 输出质量分，趋势图入看板。
 - 验收：同一项目重复 run，易错场景覆盖率单调上升。
 
 ### Phase 3 — 团队化（按需）
-- [ ] S5 Web 控制台鉴权 + 日志流；多项目看板权限。
+- [x] S5 Web 控制台**日志流**（子进程增量日志 + 前端轮询实时刷新）；**鉴权未做**（localhost 阶段价值低且需安全决策）。
+- [x] O2 Web 自动化闭环：`extensions/web_testing/run_web.py`（声明式 YAML + Playwright + 三道防误判闸门）。未接 Playwright MCP。
 - [ ] O1 技能市场/版本管理。
-- [ ] O2 Web 自动化闭环（Playwright MCP）。
 
 ---
 

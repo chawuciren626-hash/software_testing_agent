@@ -72,7 +72,7 @@
 |---|---|---|
 | ① 接口(API)自动化 | ✅ 可运行（不依赖 LLM） | `extensions/api_testing/`：conftest（数据隔离+可达性跳过）、登录/注册用例、Allure 接入点 |
 | ② 需求分析→用例 | ✅ 规则版 + LLM 增强 | `extensions/requirements_to_cases/`：标准库生成器 + 多 provider LLM（OpenAI 兼容 / Gemini）+ 失败自动降级 |
-| ③ 报告与CI增强 | ✅ 已落地 | `extensions/reporting/`：HTML 聚合 + 钉钉/163 邮件通知 + GitHub Actions |
+| ③ 报告与CI增强 | ✅ 已落地 | `extensions/reporting/`（HTML/Allure 聚合 + 钉钉/163 邮件 + `gate_notify.py` 门禁摘要）+ **`.github/workflows/ci.yml`（根 workflow，真生效）** |
 | ④ 性能/安全冒烟 | ✅ 已落地 | `extensions/perf_security/`：线程池并发（P50/P95/P99、错误率、吞吐、阈值门禁）+ 6 项安全检查；三道闸门防假绿与假红 |
 | ⑤ Web UI 冒烟 | ✅ 已落地 | `extensions/web_testing/`：Playwright + 声明式 `web.yaml`；拒绝脆弱定位器、无断言不判绿、连接级错误与 HTTP 错误分流、失败留截图与可复现 `.spec.ts` |
 
@@ -203,6 +203,32 @@ python project_manager.py dashboard           # 跨项目总览看板（回归 /
 
 ---
 
+## 6.5 CI 与通知（`.github/workflows/ci.yml`）
+
+> ⚠️ 架构提示：GitHub Actions **只读仓库根 `.github/workflows/`**。此前模板放在
+> `extensions/reporting/.github/workflows/`，位置不对 → 从来没有真正跑过；
+> 且模板用 `|| true` 吞掉 pytest 失败，与本项目「环境不可达不判绿」的口径直接冲突。现已删除，全部迁入根 workflow。
+
+| 作业 | 硬门禁 | 说明 |
+|---|---|---|
+| `unit-tests` | ✅ | 本仓库自有单测 + 评测基线（无 `\|\| true`，失败即红）；产出 Allure + HTML 聚合制品 |
+| `base-tests` | ❌ | fork 上游基座的遗留测试，`continue-on-error` 只为可见性，不拿第三方代码问题卡交付 |
+| `project-gates` | ✅（需已配置环境） | 核心回归 / 性能安全 / Web 冒烟；三步都 `continue-on-error` 收齐结论后统一判定 |
+| `notify` | ❌ | 复用上游摘要发钉钉 + 163 邮件 |
+
+**未配置环境时不静默判绿**：缺 `STA_PROJECT_ID` / `STA_GATE_BASE_URL` 时显式打 GitHub 警告并跳过，
+而不是「没有失败 = 通过」。
+
+```bash
+# 本地预览门禁摘要（不发通知，无凭据也能跑）
+python extensions/reporting/gate_notify.py --dry-run
+python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail-on-gate
+```
+
+需要的 Variables / Secrets 见 `extensions/reporting/README.md`。
+
+---
+
 ## 7. 接入你已配置的 skills / experts
 
 基座原生支持两种接入：
@@ -217,7 +243,7 @@ python project_manager.py dashboard           # 跨项目总览看板（回归 /
 
 1. ~~先跑通①接口自动化~~ → ✅ 已完成（含核心回归门禁与单场景重跑合并）。
 2. ~~补②需求用例，并与①打通~~ → ✅ 已完成（规则版 + 多 provider LLM + 自动降级）。
-3. ~~完善③报告与 CI~~ → ✅ 已完成（项目级 HTML 报告、跨项目看板、失败聚类与趋势、钉钉/163 通知模板）。
+3. ~~完善③报告与 CI~~ → ✅ 已完成（项目级 HTML 报告、跨项目看板、失败聚类与趋势、钉钉/163 通知、**根 workflow 真跑起来 + 门禁摘要三态判定**）。
 4. ~~补④性能/安全探索~~ → ✅ 已完成（冒烟执行器 + 三道防误判闸门，接入 CLI/报告/看板/控制台）。
 5. ~~补⑤Web 自动化（可门禁的那一半）~~ → ✅ 已完成（Playwright 声明式场景，与基座的探索式测试互补）。
 6. 你提供 LLM key 后，把整套串成「需求 → 用例 → 接口/Web 自动化 → 报告」的智能体闭环。

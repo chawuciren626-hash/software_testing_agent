@@ -1,0 +1,11 @@
+# 本仓库自有扩展 + 测试的依赖（**不含**基座 langchain/langgraph 等重型依赖）。
+#
+# CI 的「产品单测（硬门禁）」作业只装这一份，目的是：
+#   装的越少 → 越快出结论、越少受第三方库升级影响、越不容易因为"装不动"而红。
+# 需要跑基座遗留测试时再单独 `pip install -e .`（见 .github/workflows/ci.yml 的 base-tests 作业）。
+-r extensions/api_testing/requirements.txt   # requests / pytest / allure-pytest
+
+pyyaml>=6.0.1          # project.yaml / regression.yaml / web.yaml 解析
+python-dotenv>=1.0     # .env 凭据加载（密钥分离）
+flask>=3.0             # 可视化控制台（web_console/app.py）
+playwright>=1.40       # ⑤ Web UI 冒烟执行器
