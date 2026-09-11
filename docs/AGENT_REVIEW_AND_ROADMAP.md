@@ -165,7 +165,12 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 - 验收：同一项目重复 run，易错场景覆盖率单调上升。
 
 ### Phase 3 — 团队化（按需）
-- [x] S5 Web 控制台**日志流**（子进程增量日志 + 前端轮询实时刷新）；**鉴权未做**（localhost 阶段价值低且需安全决策）。
+- [x] S5 Web 控制台**日志流**（子进程增量日志 + 前端轮询实时刷新）。
+- [x] **控制台访问鉴权（默认关闭）**：`web_console/auth.py` + `STA_CONSOLE_TOKEN`。
+      选择"默认关闭"而非强制：本地单人使用不增加摩擦，需要暴露到局域网/内网演示时一行配置开启。
+      开启后 `/api/*` 回 401 JSON、页面跳 `/login`；免鉴权仅 `/login`、`/logout`、`/healthz`、
+      `/api/auth/status`、`/static/`；会话存 token 的 `sha256` 指纹（换 token 旧会话自动失效）；
+      token 不写前端、不写日志、启动信息不回显；`next` 只接受站内相对路径防开放重定向。
 - [x] O2 Web 自动化闭环：`extensions/web_testing/run_web.py`（声明式 YAML + Playwright + 三道防误判闸门）。未接 Playwright MCP。
 - [ ] O1 技能市场/版本管理。
 

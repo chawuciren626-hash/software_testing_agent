@@ -384,6 +384,10 @@ svg{display:block;}
   </nav>
   <div class="side-foot">
     <div class="status-line"><span class="dot"></span> 后端在线</div>
+    <!-- 开了鉴权才显示：没开鉴权时显示"退出登录"只会让人困惑 -->
+    <div id="authLine" style="display:none;margin-top:6px">
+      访问鉴权：已开启 · <a href="/logout" style="color:#a5b4fc">退出登录</a>
+    </div>
     <div style="margin-top:6px">基座：agentic-test-explorer<br><code>python project_manager.py</code></div>
   </div>
 </aside>
@@ -711,6 +715,23 @@ function showToast(msg,type=''){
 const KIND_LABEL={run:'全流程',regression:'核心回归',rerun:'单场景重跑',dashboard:'跨项目看板',
                   'perf-security':'性能与安全','web':'Web 冒烟'};
 function kindLabel(k){return KIND_LABEL[k]||k||'任务';}
+// 鉴权开启时，任何请求收到 401 都跳登录页。
+// 不拦的话界面只会"静默不更新"，用户完全不知道发生了什么（本地单人用时不会触发，
+// 但开了鉴权后 token 一过期就是这个现象）。
+const _rawFetch=window.fetch.bind(window);
+window.fetch=async(...args)=>{
+  const r=await _rawFetch(...args);
+  if(r.status===401&&location.pathname!=='/login'){ location.href='/login'; }
+  return r;
+};
+// 仅用于展示"已开启鉴权 / 退出登录"，失败不影响主流程
+fetch('/api/auth/status').then(r=>r.json()).then(d=>{
+  if(d&&d.enabled){
+    const el=document.getElementById('authLine');
+    if(el) el.style.display='';
+  }
+}).catch(()=>{});
+
 const ICONS={
   play:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
   refresh:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',

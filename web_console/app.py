@@ -80,6 +80,12 @@ app = Flask(__name__, template_folder=str(RES_DIR / "web_console" / "templates")
 app.jinja_env.auto_reload = True
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
+# 访问鉴权（**默认关闭**）：配了 .env 的 STA_CONSOLE_TOKEN 才生效。
+# 不配时行为与之前完全一致 —— 本地单人用不需要摩擦，但端口一旦暴露到局域网
+# 它就是个"任何人都能触发测试任务"的入口，所以做成可开启。
+import web_console.auth as console_auth  # noqa: E402
+console_auth.install(app)
+
 
 def pm_script() -> str:
     """project_manager.py 的路径：打包后从资源目录取，否则用仓库里的源文件。"""
@@ -992,5 +998,12 @@ if __name__ == "__main__":
     print("=" * 56)
     print("  软件测试智能体 · Web 控制台")
     print("  http://127.0.0.1:8765")
+    # 明确告知鉴权状态：不说清楚的话，"开了还是没开"只能靠试。
+    # 注意：**绝不回显 token 本身**。
+    if console_auth.enabled():
+        print(f"  访问鉴权：已开启（token 来自环境变量 {console_auth.TOKEN_ENV}）")
+        print("  关闭方式：删除 .env 中的该行并重启")
+    else:
+        print(f"  访问鉴权：未开启（如需开启，在 .env 设 {console_auth.TOKEN_ENV}）")
     print("=" * 56)
     app.run(host="127.0.0.1", port=8765, debug=False)

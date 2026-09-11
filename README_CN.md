@@ -122,12 +122,13 @@ agent-explorer --missions missions/new_user_agent.yaml --headed
 | Web 服务 | `.venv/Scripts/python web_console/app.py` | 浏览器访问 http://127.0.0.1:8765 |
 | 纯命令行 | `python project_manager.py run <项目ID>` | 适合 CI / 无人值守 |
 
-界面采用 WorkBuddy 风格左侧分组导航，包含 6 个功能页：
+界面采用 WorkBuddy 风格左侧分组导航，包含 7 个功能页：
 
 | 页面 | 能力 |
 |---|---|
 | **项目** | 项目卡片 + 回归门禁徽章 + 概览统计；一键跑全流程/核心回归（后台执行 + 实时日志）；新建项目向导（填环境地址/认证/需求/密钥变量名）；查看报告 |
 | **任务** | 执行记录列表（全流程/回归/看板）+ 实时滚动日志 |
+| **门禁** | 三道门禁（核心回归 / 性能与安全 / Web UI 冒烟）的三态结论矩阵 + 可复制的文字摘要；与 `gate_notify.py` **同一套判定函数**，不会出现"控制台绿、CLI 红" |
 | **自动化** | 各项目核心回归场景清单（冒烟/pytest marker/node）**与 Web UI 场景清单**、类型与最近结果、一键运行；无断言的 Web 场景会提前标红 |
 | **资料库** | 浏览 `docs/` 下的 Markdown 文档并在线渲染阅读 |
 | **技能** | 列出 `agent-skills/` 下技能，支持启用/停用（`.disabled` 开关） |
@@ -135,6 +136,24 @@ agent-explorer --missions missions/new_user_agent.yaml --headed
 
 > 依赖：`pip install flask pywebview`。桌面端与 Web 端共用同一套 Flask 代码
 > （`web_console/app.py`），Web 层只做薄封装——所有执行仍走 `project_manager.py`，与 CLI 同源。
+
+#### 控制台访问鉴权（默认关闭）
+
+控制台默认只监听 `127.0.0.1`，本地单人使用不需要鉴权。但只要把端口暴露到局域网
+（同事试用 / 内网演示 / 放在测试机上），它就变成"任何人都能触发任意测试任务"的入口。
+因此做成**可开启**：在根目录 `.env` 加一行并重启控制台即可（`STA_CONSOLE_TOKEN=<随机长字符串>`，
+可用 `python -c "import secrets;print(secrets.token_urlsafe(32))"` 生成）；
+不配或写成 `off` → 行为与之前完全一致。
+
+| 行为 | 说明 |
+|---|---|
+| 未开启 | 全站直连，启动信息提示"访问鉴权：未开启" |
+| 已开启·未登录 | `/api/*` 返回 401 JSON（前端自动跳登录页），页面重定向到 `/login` |
+| 已开启·已登录 | 会话记录 token 的 `sha256` 指纹；**换 token 会让旧会话自动失效** |
+| 免鉴权路径 | `/login`、`/logout`、`/healthz`（探活）、`/api/auth/status`、`/static/` |
+| 其他 | `hmac.compare_digest` 定长比较；`next` 只接受站内相对路径（防开放重定向）；token 不写前端、不写日志、启动信息不回显 |
+
+> `.env.example` 里有该配置段的说明；`.env` 本身不入库。
 
 ### 5.6 打包为独立 exe（免环境分发）
 无需用户安装 Python/依赖，双击即用：
