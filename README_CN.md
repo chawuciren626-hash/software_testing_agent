@@ -10,7 +10,7 @@
 | 维度 | 说明 |
 |---|---|
 | 基座 | agentic-test-explorer：LangGraph 多人格智能体 + Playwright + MCP + Agent Skills + Langmem 记忆 |
-| 我们的增量 | 在基座之上扩展四大能力（见第 4 节 `extensions/`） |
+| 我们的增量 | 在基座之上扩展五大能力（见第 4 节 `extensions/`） |
 | 已配资源 | 本项目已配置的专家与技能，通过基座的 **MCP / Agent Skills** 机制接入 |
 | 运行要求 | 上层智能体需 Claude/Gemini key；**接口自动化无需 LLM 即可跑** |
 
@@ -23,12 +23,12 @@
                     │           软件测试智能体 (本项目)           │
                     └──────────────────────────────────────────┘
                                      │
-        ┌───────────────┬────────────┼────────────┬───────────────┐
-        ▼               ▼            ▼            ▼               ▼
-   ① 接口自动化    ② 需求→用例   ③ 报告与CI   ④ 性能/安全    基座 Web 探索
-   (pytest+requests) (规则/LLM)   (Allure/钉钉/邮件) (locust/mission) (Playwright多人格)
-        │               │            │            │               │
-        └───────────────┴─────┬──────┴────────────┴───────────────┘
+        ┌───────────────┬────────────┬────────────┬───────────────┬──────────────┐
+        ▼               ▼            ▼            ▼               ▼              ▼
+   ① 接口自动化    ② 需求→用例   ③ 报告与CI   ④ 性能/安全    ⑤ Web 冒烟    基座 Web 探索
+   (pytest+requests) (规则/LLM)   (Allure/钉钉/邮件) (线程池+安全检查) (Playwright声明式) (Playwright多人格)
+        │               │            │            │               │              │
+        └───────────────┴─────┬──────┴────────────┴───────────────┴──────────────┘
                               ▼
               agent-skills/  +  mcp_servers.json   ← 你已配置的 skills/experts 接入点
                               ▼
@@ -45,15 +45,16 @@
 ├── agent-skills/                         # Bring-Your-Own Skills（智能体可调）
 │   ├── api-test-design/                  #   接口测试设计方法论
 │   └── requirements-to-cases/            #   需求→用例方法论
-├── extensions/                           # 四大扩展能力
+├── extensions/                           # 五大扩展能力
 │   ├── api_testing/                      # ① 接口自动化（pytest+requests，可独立跑）
 │   ├── requirements_to_cases/            # ② 需求→用例（规则版可跑，可选 LLM）
 │   ├── reporting/                        # ③ 报告与 CI（HTML/Allure + 钉钉/163邮件）
-│   └── perf_security/                    # ④ 性能/安全（locust + mission 骨架）
+│   ├── perf_security/                    # ④ 性能/安全冒烟（线程池压测 + 6 项安全检查）
+│   └── web_testing/                      # ⑤ Web UI 冒烟（Playwright 声明式 YAML + 门禁）
 ├── extensions/regression/                # 核心业务回归执行器
 ├── projects/                             # 公司各类项目登记表（每项目一个目录）
 │   └── <project_id>/                     #   project.yaml + requirements.md
-│                                         #   + regression.yaml + artifacts/
+│                                         #   + regression.yaml + web.yaml + artifacts/
 ├── missions/                             # 基座：YAML 测试任务
 ├── src/agentic_explorer/                 # 基座：核心代码
 ├── project_manager.py                    # 多项目对接统一入口（建/列/跑/回归/看板）
@@ -65,16 +66,18 @@
 
 ---
 
-## 4. 四大能力进度
+## 4. 五大能力进度
 
 | 能力 | 状态 | 交付内容 |
 |---|---|---|
 | ① 接口(API)自动化 | ✅ 可运行（不依赖 LLM） | `extensions/api_testing/`：conftest（数据隔离+可达性跳过）、登录/注册用例、Allure 接入点 |
-| ② 需求分析→用例 | ✅ 规则版可运行 | `extensions/requirements_to_cases/`：标准库生成器 + 样例 + LLM 增强入口 |
-| ③ 报告与CI增强 | 🟡 骨架完成 | `extensions/reporting/`：HTML 聚合 + 钉钉/163 邮件脚本 + GitHub Actions 模板 |
-| ④ 性能/安全探索 | 🟡 骨架完成 | `extensions/perf_security/`：locust 压测 + 安全 mission 模板 |
+| ② 需求分析→用例 | ✅ 规则版 + LLM 增强 | `extensions/requirements_to_cases/`：标准库生成器 + 多 provider LLM（OpenAI 兼容 / Gemini）+ 失败自动降级 |
+| ③ 报告与CI增强 | ✅ 已落地 | `extensions/reporting/`：HTML 聚合 + 钉钉/163 邮件通知 + GitHub Actions |
+| ④ 性能/安全冒烟 | ✅ 已落地 | `extensions/perf_security/`：线程池并发（P50/P95/P99、错误率、吞吐、阈值门禁）+ 6 项安全检查；三道闸门防假绿与假红 |
+| ⑤ Web UI 冒烟 | ✅ 已落地 | `extensions/web_testing/`：Playwright + 声明式 `web.yaml`；拒绝脆弱定位器、无断言不判绿、连接级错误与 HTTP 错误分流、失败留截图与可复现 `.spec.ts` |
 
-> 标注 ✅ 的模块已可独立运行；🟡 为已搭好骨架、待接 LLM/真实后端后填充。
+> ①~⑤ 均可独立运行并接入 CLI / 报告 / 跨项目看板 / Web 控制台；
+> ②的 LLM 增强与基座的智能体编排需 LLM key，其余能力**零 LLM 依赖**。
 
 ---
 
@@ -125,7 +128,7 @@ agent-explorer --missions missions/new_user_agent.yaml --headed
 |---|---|
 | **项目** | 项目卡片 + 回归门禁徽章 + 概览统计；一键跑全流程/核心回归（后台执行 + 实时日志）；新建项目向导（填环境地址/认证/需求/密钥变量名）；查看报告 |
 | **任务** | 执行记录列表（全流程/回归/看板）+ 实时滚动日志 |
-| **自动化** | 各项目核心回归场景清单（冒烟/pytest marker/node）、类型与最近结果、一键运行核心回归 |
+| **自动化** | 各项目核心回归场景清单（冒烟/pytest marker/node）**与 Web UI 场景清单**、类型与最近结果、一键运行；无断言的 Web 场景会提前标红 |
 | **资料库** | 浏览 `docs/` 下的 Markdown 文档并在线渲染阅读 |
 | **技能** | 列出 `agent-skills/` 下技能，支持启用/停用（`.disabled` 开关） |
 | **模型维护** | 查看 Anthropic/Google 密钥配置状态，设置默认 provider/model/base_url（存 `models_config.json`） |
@@ -166,8 +169,11 @@ agent-explorer --missions missions/new_user_agent.yaml --headed
 python project_manager.py create              # 交互式填写项目信息（也支持全参传入）
 python project_manager.py list                # 列出已接入项目
 python project_manager.py run <id>            # 全流程：需求->用例 -> 接口自动化 -> 核心回归 -> 报告
+python project_manager.py run <id> --perf --web  # 全流程 + ④性能/安全 + ⑤Web 冒烟
 python project_manager.py regression <id>     # 仅核心业务回归（适合常态化门禁）
-python project_manager.py dashboard           # 跨项目总览看板
+python project_manager.py perf-security <id>  # ④ 性能 + 安全冒烟（--only perf|security）
+python project_manager.py web <id>            # ⑤ Web UI 冒烟（--only 场景名/标签、--headed、--browser）
+python project_manager.py dashboard           # 跨项目总览看板（回归 / 性能安全 / Web UI 三组门禁）
 ```
 
 每个公司项目 = `projects/<id>/` 四件套：
@@ -209,8 +215,9 @@ python project_manager.py dashboard           # 跨项目总览看板
 
 ## 8. 路线图
 
-1. **先跑通①接口自动化**（不依赖 LLM，立即见效）→ 接好 skills/MCP。
-2. 补②需求用例，并与①打通（需求→自动生成 pytest 骨架）。
-3. 完善③报告与 CI（Allure 报告 + 钉钉/163 邮件真正通知）。
-4. 补④性能/安全探索，并注册为基座高级人格。
-5. 你提供 LLM key 后，把整套串成「需求 → 用例 → 接口/Web 自动化 → 报告」的智能体闭环。
+1. ~~先跑通①接口自动化~~ → ✅ 已完成（含核心回归门禁与单场景重跑合并）。
+2. ~~补②需求用例，并与①打通~~ → ✅ 已完成（规则版 + 多 provider LLM + 自动降级）。
+3. ~~完善③报告与 CI~~ → ✅ 已完成（项目级 HTML 报告、跨项目看板、失败聚类与趋势、钉钉/163 通知模板）。
+4. ~~补④性能/安全探索~~ → ✅ 已完成（冒烟执行器 + 三道防误判闸门，接入 CLI/报告/看板/控制台）。
+5. ~~补⑤Web 自动化（可门禁的那一半）~~ → ✅ 已完成（Playwright 声明式场景，与基座的探索式测试互补）。
+6. 你提供 LLM key 后，把整套串成「需求 → 用例 → 接口/Web 自动化 → 报告」的智能体闭环。

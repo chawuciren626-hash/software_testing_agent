@@ -178,6 +178,182 @@ def test_read_perf_security_handles_missing_and_broken(tmp_path):
     assert pm._read_perf_security(pdir) is None
 
 
+# ---------------------------------------------------------------------------
+# ⑤ Web UI 冒烟（project_manager 层）
+# ---------------------------------------------------------------------------
+def _write_web(pdir, all_pass=True, **over):
+    import json as _json
+    payload = {
+        "project_id": "proj", "base_url": "http://localhost:8090",
+        "browser": "chromium", "headless": True,
+        "generated_at": "2026-09-11 12:00:00",
+        "baseline": {"ok": True, "reason": "可达（HTTP 200，title='自检页'）"},
+        "config_issues": [], "flaky": 0, "assertions": 2,
+        "all_pass": all_pass, "total": 2, "passed": 2, "failed": 0, "skipped": 0,
+        "summary": ("场景 2 通过 / 0 失败 / 0 跳过" if all_pass
+                    else "环境不可达（或浏览器无法启动），全部场景跳过，按未通过处理（防 CI 假绿）"),
+        "scenarios": [
+            {"name": "Web 首页可访问", "tags": ["smoke"], "result": "PASS", "reason": "",
+             "assertions": 1, "attempts": 1, "flaky": False, "duration_ms": 500,
+             "failed_step": None, "screenshots": [], "repro": ""},
+            {"name": "登录后进入工作台", "tags": ["smoke"], "result": "PASS", "reason": "",
+             "assertions": 1, "attempts": 1, "flaky": False, "duration_ms": 600,
+             "failed_step": None, "screenshots": [], "repro": ""},
+        ],
+    }
+    payload.update(over)
+    (pdir / "artifacts" / "web.json").write_text(
+        _json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return payload
+
+
+def test_step_report_renders_web_card(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    _write_web(pdir)
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True,
+           "results": [{"name": "登录", "result": "PASS"}]}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "Web UI 冒烟" in txt
+    assert "Web 首页可访问" in txt
+    assert "登录后进入工作台" in txt
+    assert "http://localhost:8090" in txt
+    assert "Web UI" in txt          # 摘要条里的独立门禁项
+
+
+def test_step_report_without_web_has_no_card(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True,
+           "results": [{"name": "登录", "result": "PASS"}]}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "Web UI 冒烟" not in txt
+
+
+def test_web_card_links_are_relative_to_artifacts_dir(tmp_path):
+    """证据链接必须相对 report.html（同在 artifacts/）——拼成 artifacts/artifacts/... 会 404。"""
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    _write_web(pdir, all_pass=False, failed=1, passed=1,
+               scenarios=[
+                   {"name": "下单", "tags": ["order"], "result": "FAIL",
+                    "reason": "文案不符", "assertions": 1, "attempts": 1, "flaky": False,
+                    "duration_ms": 900,
+                    "failed_step": {"index": 4, "action": "expect_text", "target": "#toast"},
+                    "screenshots": [r"artifacts\web_shots\下单-FAIL.png"],
+                    "repro": r"artifacts\web_repro_下单.spec.ts"},
+               ])
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True,
+           "results": [{"name": "登录", "result": "PASS"}]}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "href='web_shots/下单-FAIL.png'" in txt
+    assert "href='web_repro_下单.spec.ts'" in txt
+    assert "artifacts/web_shots" not in txt
+    assert "artifacts\\web_shots" not in txt
+    # 失败步骤要写出来，便于直接定位
+    assert "第4步 expect_text" in txt
+
+
+def test_web_card_reports_config_issues_not_silently(tmp_path):
+    """配置问题必须显式列出：静默跳过会让门禁悄悄变松。"""
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    _write_web(pdir, all_pass=False, failed=0, passed=0, skipped=1,
+               config_issues=["[登录] [config] 第 2 步（click）：脆弱定位器 `div:nth-child(3)`"])
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True,
+           "results": [{"name": "登录", "result": "PASS"}]}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "配置/门禁问题 1 项" in txt
+    assert "脆弱定位器" in txt
+
+
+def test_web_card_marks_skipped_scenarios(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    _write_web(pdir, all_pass=False, passed=0, failed=0, skipped=2,
+               baseline={"ok": False, "reason": "环境不可达：ERR_CONNECTION_REFUSED"},
+               scenarios=[
+                   {"name": "Web 首页可访问", "tags": ["smoke"], "result": "SKIP",
+                    "reason": "未执行：环境不可达", "assertions": 0, "attempts": 0,
+                    "flaky": False, "duration_ms": 0, "failed_step": None,
+                    "screenshots": [], "repro": ""},
+               ])
+    reg = {"passed": 1, "total": 1, "failed": 0, "skipped": 0, "all_pass": True,
+           "results": [{"name": "登录", "result": "PASS"}]}
+    txt = pm._step_report("proj", pdir, None, reg).read_text(encoding="utf-8")
+    assert "基线未通过" in txt
+    assert "不计为产品缺陷" in txt
+    assert "跳过" in txt
+
+
+def test_read_web_handles_missing_and_broken(tmp_path):
+    pdir = tmp_path / "proj"
+    (pdir / "artifacts").mkdir(parents=True)
+    assert pm._read_web(pdir) is None
+    (pdir / "artifacts" / "web.json").write_text("{bad json", encoding="utf-8")
+    assert pm._read_web(pdir) is None
+
+
+def test_create_generates_parseable_web_yaml(tmp_path, monkeypatch):
+    """create 生成的 web.yaml 必须能真解析，且 {{username}} 占位符不能被 format 吃掉。"""
+    import yaml
+    monkeypatch.setattr(pm, "PROJECTS_DIR", tmp_path)
+    args = pm.build_parser().parse_args([
+        "create", "--id", "wp", "--name", "W", "--base-url", "http://h:9",
+        "--owner", "o", "--description", "d", "--auth-type", "form",
+        "--login-url", "/login", "--user-env", "U", "--pass-env", "P",
+    ])
+    pm.cmd_create(args)
+    wy = tmp_path / "wp" / "web.yaml"
+    assert wy.is_file()
+    text = wy.read_text(encoding="utf-8")
+    assert "{{username}}" in text and "{{password}}" in text   # 未被转义成 {username}
+    data = yaml.safe_load(text)
+    assert data["project_id"] == "wp"
+    assert data["web"]["scenarios"][0]["name"]
+    assert data["web"]["viewport"] == {"width": 1440, "height": 900}
+    # project.yaml 里也留了 Web 地址入口（注释形式，不影响解析）
+    pj = yaml.safe_load((tmp_path / "wp" / "project.yaml").read_text(encoding="utf-8"))
+    assert pj["web_file"] == "web.yaml"
+
+
+def test_web_yaml_template_placeholders_are_replaced():
+    text = pm.WEB_YAML_TMPL.replace("{pid}", "pid-x")
+    assert "{pid}" not in text
+    assert "pid-x" in text
+
+
+def test_dashboard_shows_web_column(tmp_path, monkeypatch):
+    """看板要带 Web UI 列，否则多项目下 Web 门禁结果无处可看。"""
+    pdirs = tmp_path / "projects"
+    for pid, with_web in (("a", True), ("b", False)):
+        d = pdirs / pid
+        d.mkdir(parents=True)
+        (d / "project.yaml").write_text(f"project_id: {pid}\nname: {pid}\n", encoding="utf-8")
+        (d / "artifacts").mkdir()
+        if with_web:
+            _write_web(d, all_pass=True)
+    monkeypatch.setattr(pm, "PROJECTS_DIR", pdirs)
+    monkeypatch.setattr(pm, "ROOT", tmp_path)
+    pm.cmd_dashboard(pm.build_parser().parse_args(["dashboard"]))
+    html = (tmp_path / "projects_dashboard.html").read_text(encoding="utf-8")
+    assert "Web UI" in html
+    assert "2通过/0失败" in html     # a 项目
+    assert "未执行" in html          # b 项目
+
+
+def test_cli_has_web_subcommand():
+    ap = pm.build_parser()
+    args = ap.parse_args(["web", "p1", "--only", "smoke", "--headed", "--browser", "firefox"])
+    assert args.func is pm.cmd_web
+    assert args.only == "smoke" and args.headed is True and args.browser == "firefox"
+
+
+def test_run_parser_has_web_flag():
+    args = pm.build_parser().parse_args(["run", "p1", "--web"])
+    assert args.web is True
+
+
 def test_load_projects_skips_disabled(tmp_path, monkeypatch):
     # 准备两个项目目录，其中一个标记停用
     (tmp_path / "a").mkdir()

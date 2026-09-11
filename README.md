@@ -16,6 +16,7 @@
 - **接口自动化（零 LLM 依赖）**：`extensions/api_testing` 基于 `pytest + requests`，不需要任何 LLM Key 即可独立跑通；被测服务不可达时自动跳过，不污染结果。
 - **需求 → 测试用例生成**：`extensions/requirements_to_cases` 提供零依赖的规则版生成器（按关键词拆需求草稿）；可选接入 **LLM 增强**（`--llm`），**默认走 OpenAI 兼容协议（DeepSeek / 通义千问 / 智谱 GLM / Kimi / 本地 Ollama 等）**，也可切到 Gemini；**任何失败（缺 key / 限流 / 网络）都会自动降级规则版**，绝不中断流水线。
 - **核心业务回归 + 门禁**：声明式回归清单（`api_smoke` / `pytest_marker` / `pytest_node`），环境不可达导致全 SKIP 时**不判绿**，避免 CI 假绿。
+- **Web UI 冒烟 + 门禁**：`extensions/web_testing` 用 Playwright 跑 `web.yaml` 声明的浏览器关键路径，**无断言的场景不判绿**、连接级错误与 HTTP 4xx/5xx 严格区分，失败留截图与可复现 `.spec.ts`。
 - **可视化 Web 控制台**：`web_console`（Flask + 原生前端），含项目 / 任务 / 自动化 / 资料库 / 技能 / 模型维护 6 大页面，报告弹窗内可查看分组用例卡片与回归结果。
 - **报告增强**：失败原因聚类、新增/老毛病标记、跨项目趋势对比、不稳定场景洞察。
 - **跨项目看板**：一键生成各项目最近一次回归与门禁状态的总览。
@@ -35,6 +36,7 @@ software_testing_agent/
 │   ├── requirements_to_cases/  # 需求 → 测试用例生成
 │   ├── reporting/              # 报告与 CI 增强
 │   ├── perf_security/          # 性能 / 安全冒烟（线程池压测 + 安全检查）
+│   ├── web_testing/            # Web UI 冒烟（Playwright 声明式 YAML + 门禁）
 │   └── regression/             # 核心业务回归执行引擎
 ├── web_console/                # 可视化控制台
 │   ├── app.py                  # Flask 后端（薄封装，调用 project_manager）
@@ -107,7 +109,8 @@ python project_manager.py dashboard      # 生成跨项目总览看板
 | `project.yaml` | 元数据 + 测试环境地址 + 认证（**只存环境变量名，真实密钥放根 `.env`**） |
 | `requirements.md` | 需求描述（用于需求→用例） |
 | `regression.yaml` | 核心业务场景声明（api_smoke / pytest_marker / pytest_node） |
-| `artifacts/` | 产物（报告、回归 JSON、Allure 结果，**不入库**） |
+| `web.yaml` | Web UI 冒烟场景声明（Playwright 声明式步骤 + `expect_*` 断言） |
+| `artifacts/` | 产物（报告、回归 JSON、Web 截图与可复现脚本、Allure 结果，**不入库**） |
 
 > ⚠️ **演示 / 示例测试项目属于本地运行时数据，不纳入本仓库。**
 > `.gitignore` 已整体排除 `projects/`，避免把个人/公司项目配置、密钥与产物提交到公开仓库。
@@ -126,6 +129,16 @@ python project_manager.py dashboard      # 生成跨项目总览看板
   三道闸门防误判：业务码判错（HTTP 200 但 code=500 仍算失败）、环境不可达不判绿、基线登录失败时跳过而不是报假漏洞。
   CLI：`python project_manager.py perf-security <项目ID>`（`--only perf|security`、`--users`、`--iterations`），
   或 `python project_manager.py run <项目ID> --perf` 并入全流程。`locustfile_api.py` 保留作专职长压入口。
+- **web_testing**：Web UI **冒烟**执行器（`run_web.py`，Playwright + 声明式 `web.yaml`，接入 CI 门禁）。
+  与基座的浏览器探索是**互补**关系：基座是"给智能体探索未知页面"，这里是"给 CI 的确定性回归"；
+  但**定位器与等待的方法论完全继承**基座（`data-test-subj → aria-label → 可见文本 → role`，
+  **运行时拒绝 XPath / `:nth-child` 等位置选择器**，用 web-first 断言而非固定 sleep）。
+  三道闸门防误判：**无断言的场景记 SKIP 不判绿**（防"点完就走"的假绿）、**环境不可达/浏览器起不来全 SKIP 不判绿**、
+  **配置问题单独报出且该场景不执行**（防把配置笔误当产品缺陷）；并严格区分
+  连接级错误（环境不可达 → SKIP）与 HTTP 4xx/5xx（产品缺陷 → FAIL）。
+  失败自动截图并生成可复现的 `.spec.ts`；运行前清理上次证据，避免旧截图被当成本次证据。
+  CLI：`python project_manager.py web <项目ID>`（`--only`、`--headed`、`--browser`），
+  或 `python project_manager.py run <项目ID> --web` 并入全流程。
 - **regression**：核心业务回归执行与单场景重跑合并。
 
 ---

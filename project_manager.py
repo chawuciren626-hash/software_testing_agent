@@ -93,6 +93,9 @@ description: {description}
 owner: {owner}
 env:
   base_url: {base_url}
+  # ⑤ Web UI 冒烟的地址（前端地址，通常与接口地址不同端口/域名）。
+  #   不写则 Web 冒烟回退用 base_url。示例：http://localhost:8090
+  # web_base_url: {base_url}
   auth:
     type: {auth_type}
     login_url: {login_url}
@@ -101,6 +104,7 @@ env:
     token_field: token
 requirements_file: requirements.md
 regression_file: regression.yaml
+web_file: web.yaml        # ⑤ Web UI 冒烟场景（Playwright 声明式 YAML）
 # ④ 性能与安全冒烟（可选）。整段不写也能跑：压测目标会自动从 regression.yaml
 #   的只读接口派生，安全检查用默认清单。需要更精细控制时再取消注释。
 # perf_security:
@@ -166,6 +170,59 @@ core_business:
   #   type: pytest_marker
   #   target: extensions/api_testing
   #   marker: smoke
+"""
+
+WEB_YAML_TMPL = """\
+project_id: {pid}
+# ↑ 本模板用 str.replace 渲染（不是 format）：模板里大量 { } 是 YAML 语法，
+#   若用 format 会被当成占位符吃掉/报错——与 REGRESSION_TMPL 同一个坑。
+# Web UI 冒烟：浏览器里的关键用户路径，声明式书写、可做 CI 门禁。
+# 执行：python project_manager.py web {pid} [--only 场景名] [--headed] [--browser firefox]
+#
+# 三条硬约定（写场景前请先读，否则门禁会失真）：
+# 1) 每个场景至少要有一个 expect_* 断言。只操作不断言的场景结果记 SKIP（不算绿）——
+#    "点完就走"的场景只会永远通过，是门禁里最危险的东西。
+# 2) 定位器优先级：data-test-subj > aria-label > 可见文本 > 语义 role。
+#    禁止 XPath 与位置选择器（:nth-child / :nth-of-type / 裸 div/span 链）——
+#    布局一改就碎，产出的是假红噪音。用了会被判为"配置问题"并拒绝执行。
+# 3) 环境不可达 → 全部 SKIP、门禁不通过（防 CI 假绿）；
+#    但 HTTP 4xx/5xx 算产品缺陷 → FAIL。两者不要混。
+#
+# 可用步骤：
+#   goto / click / fill / press / check / uncheck / hover / select_option
+#   scroll_into_view / wait_for / wait_for_hidden / wait_for_url / wait_for_load_state
+#   expect_visible / expect_hidden / expect_text / expect_value / expect_count
+#   expect_url / expect_title / screenshot
+# 取值支持 {{username}} / {{password}} 占位（运行期从 .env 替换，不入库）。
+web:
+  # base_url 不写则回退 project.yaml 的 env.web_base_url / env.base_url
+  # base_url: http://localhost:8090
+  browser: chromium          # chromium | firefox | webkit
+  headless: true
+  timeout_ms: 15000
+  retries: 0                 # 默认不重试：重试会吃掉偶发缺陷的证据；需要抗抖动再调 1~2
+  viewport: {width: 1440, height: 900}
+  launch_args: []            # 崩溃逃生口，如 ["--no-sandbox","--disable-gpu","--disable-dev-shm-usage"]
+  screenshot_on_failure: true
+
+  scenarios:
+    # 示例：请按真实前端改选择器与断言，跑通后再纳入门禁。
+    - name: Web 首页可访问
+      tags: [smoke]
+      steps:
+        - goto: /
+        - expect_visible: "body"
+        - screenshot: home
+    # - name: 管理员登录进入后台
+    #   tags: [smoke]
+    #   steps:
+    #     - goto: /login
+    #     - fill: {selector: "[data-test-subj='username']", value: "{{username}}"}
+    #     - fill: {selector: "[data-test-subj='password']", value: "{{password}}"}
+    #     - click: "[data-test-subj='submit']"
+    #     - wait_for_url: "**/home"
+    #     - expect_visible: "[data-test-subj='sidebar']"
+    #     - expect_text: {selector: "h1", contains: "工作台"}
 """
 
 REQUIREMENTS_TMPL = """\
@@ -282,6 +339,10 @@ def cmd_create(args: argparse.Namespace) -> None:
         REGRESSION_TMPL.replace("{pid}", pid).replace("{login_url}", login_url),
         encoding="utf-8",
     )
+    # Web 冒烟场景模板（同样是 replace 渲染：YAML 里全是 { }，format 会踩坑）
+    (pdir / "web.yaml").write_text(
+        WEB_YAML_TMPL.replace("{pid}", pid), encoding="utf-8",
+    )
     (pdir / "artifacts").mkdir(exist_ok=True)
     print(f"\n✅ 项目 {pid} 已创建：{pdir}")
     print("   下一步：")
@@ -289,6 +350,8 @@ def cmd_create(args: argparse.Namespace) -> None:
     print(f"   2) 完善 {pdir / 'requirements.md'} 与 {pdir / 'regression.yaml'}")
     print(f"   3) python project_manager.py run {pid}    # 全流程")
     print(f"      python project_manager.py regression {pid}   # 仅核心回归")
+    print(f"   可选：按前端真实选择器改 {pdir / 'web.yaml'}，再跑 "
+          f"`python project_manager.py web {pid}`")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -378,6 +441,7 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
 
 RUN_META_FILE = "run_meta.json"
 PERF_SEC_FILE = "perf_security.json"
+WEB_FILE = "web.json"
 
 
 def _step_perf_security(pdir: Path, users: Optional[int] = None,
@@ -408,8 +472,45 @@ def _read_perf_security(pdir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _step_web(pdir: Path, only: Optional[str] = None, headed: bool = False,
+              browser: Optional[str] = None) -> Dict[str, Any]:
+    """Web UI 冒烟：结果落 artifacts/web.json，截图落 artifacts/web_shots/。
+
+    与核心回归 / 性能安全同源的三道防假绿闸门（见 extensions/web_testing/run_web.py）：
+    无断言不算绿、环境不可达不判绿、配置问题单独报出。
+    """
+    import argparse as _ap
+
+    sys.path.insert(0, str(ROOT / "extensions" / "web_testing"))
+    import run_web as rw  # noqa: E402
+
+    out_json = pdir / "artifacts" / WEB_FILE
+    web_yaml = pdir / "web.yaml"
+    if not web_yaml.is_file():
+        raise SystemExit(
+            f"未找到 {web_yaml}。请先在项目目录下创建 web.yaml 声明 Web 场景"
+            "（可用 `python project_manager.py create` 生成模板，或参考 "
+            "extensions/web_testing/run_web.py 的文件头示例）。"
+        )
+    print("  [Web 冒烟] 执行浏览器关键路径回归（Playwright + 声明式 YAML）...")
+    ns = _ap.Namespace(browser=browser, headed=headed)
+    return rw.run_web(pdir / "project.yaml", web_yaml, out_json, only=only, args=ns)
+
+
+def _read_web(pdir: Path) -> Optional[Dict[str, Any]]:
+    f = Path(pdir) / "artifacts" / WEB_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def _read_regression(pdir: Path) -> Dict[str, Any]:
     f = Path(pdir) / "artifacts" / "regression.json"
+
     if f.is_file():
         try:
             return json.loads(f.read_text(encoding="utf-8")) or {}
@@ -696,6 +797,89 @@ def _perf_security_card_html(pf: Dict[str, Any]) -> str:
     )
 
 
+def _web_card_html(wf: Dict[str, Any]) -> str:
+    """渲染「Web UI 冒烟」卡片（场景表 + 配置/门禁问题 + 失败证据）。"""
+    ok_all = bool(wf.get("all_pass"))
+    gate = ("<span class='gate ok'>通过</span>" if ok_all
+            else "<span class='gate bad'>未通过</span>")
+    bloom = _h(wf.get("summary") or "")
+
+    scenarios = wf.get("scenarios") or []
+    issues = wf.get("config_issues") or []
+
+    if not scenarios:
+        scen_html = "<div class='reg-empty'>没有已声明的 Web 场景。</div>"
+    else:
+        rows = []
+        for s in scenarios:
+            cls = {"PASS": "ok", "SKIP": "skip"}.get(str(s.get("result")), "bad")
+            fs = s.get("failed_step") or {}
+            fs_txt = ""
+            if fs:
+                fs_txt = f"第{fs.get('index')}步 {fs.get('action')} → {fs.get('target')}"
+            extra = []
+            if s.get("flaky"):
+                extra.append("抖动（重试后通过）")
+            shots = s.get("screenshots") or []
+            if shots:
+                # 证据文件都在 artifacts/ 下（web_shots/ 与 web_repro_*.spec.ts），
+                # 而 report.html 本身也在 artifacts/ —— 所以只取文件名拼相对路径，
+                # 不能用执行器返回的项目级相对路径（那会拼成 artifacts/artifacts/...）。
+                links = "、".join(
+                    f"<a href='web_shots/{_h(Path(p).name)}'>截图{i + 1}</a>"
+                    for i, p in enumerate(shots)
+                )
+                extra.append(links)
+            if s.get("repro"):
+                extra.append(f"<a href='{_h(Path(str(s['repro'])).name)}'>可复现脚本</a>")
+            rows.append(
+                f"<tr class='{cls}'>"
+                f"<td class='name'>{_h(s.get('name'))}</td>"
+                f"<td class='method'>{_h('、'.join(s.get('tags') or []) or '—')}</td>"
+                f"<td class='actual'>{_h(s.get('assertions'))}</td>"
+                f"<td class='actual'>{_h(s.get('duration_ms'))}ms</td>"
+                f"<td class='result'>{_ps_result_badge(s.get('result'))}</td>"
+                f"<td class='detail'>{_h(s.get('reason') or '')}"
+                + (f"<br>{_h(fs_txt)}" if fs_txt else "")
+                + (f"<br>{' · '.join(extra)}" if extra else "")
+                + "</td></tr>"
+            )
+        base = wf.get("baseline") or {}
+        base_note = ""
+        if base and not base.get("ok"):
+            base_note = (f"<div class='ps-note bad'>基线未通过：{_h(base.get('reason', ''))}"
+                         "（此状态下场景未实际执行，结果不计为产品缺陷，但门禁按未通过处理）</div>")
+        scen_html = (
+            f"<div class='ps-sub'>通过 {_h(wf.get('passed'))} · 失败 {_h(wf.get('failed'))}"
+            f" · 跳过 {_h(wf.get('skipped'))} · 断言 {_h(wf.get('assertions'))}"
+            + (f" · 抖动 {_h(wf.get('flaky'))}" if wf.get("flaky") else "")
+            + "</div>"
+            + base_note
+            + "<div class='table-wrap'><table class='reg-table'>"
+            "<thead><tr><th>场景</th><th>标签</th><th>断言</th><th>耗时</th>"
+            "<th>结果</th><th>说明 / 证据</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table></div>"
+        )
+
+    issues_html = ""
+    if issues:
+        items = "".join(f"<li>{_h(i)}</li>" for i in issues)
+        issues_html = (f"<div class='ps-note bad'>配置/门禁问题 {len(issues)} 项"
+                       "（这些问题会让门禁失真，必须先修）："
+                       f"<ul class='ps-list'>{items}</ul></div>")
+
+    return (
+        "<div class='card'>"
+        f"<div class='card-title'>Web UI 冒烟 {gate}"
+        f"<span class='count'>{_h(bloom)}</span></div>"
+        f"<div class='ps-sub'>时间：{_h(wf.get('generated_at'))} · 地址："
+        f"<code>{_h(wf.get('base_url') or '(未配置)')}</code> · 浏览器：{_h(wf.get('browser'))}"
+        f" · {'无头' if wf.get('headless') else '有头'}</div>"
+        f"{issues_html}{scen_html}"
+        "</div>"
+    )
+
+
 def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, Any]) -> Path:
     out = pdir / "artifacts" / "report.html"
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -780,6 +964,18 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
                    f"{'通过' if _ps_ok else '未通过'}</span></div>")
         ps_card_html = _perf_security_card_html(_pf)
 
+    # Web UI 冒烟（执行过才有；门禁独立于核心回归与性能安全，各自给结论）
+    _wf = _read_web(pdir)
+    web_item = ""
+    web_card_html = ""
+    if _wf:
+        _w_ok = bool(_wf.get("all_pass"))
+        web_item = ("<div class='summary-item'><span class='k'>Web UI</span>"
+                    f"<span class='v' style='font-size:15px;font-weight:800;"
+                    f"color:var({'--ok' if _w_ok else '--bad'})'>"
+                    f"{'通过' if _w_ok else '未通过'}</span></div>")
+        web_card_html = _web_card_html(_wf)
+
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>测试报告 - {pid}</title>
@@ -837,6 +1033,8 @@ header .subtitle{{font-size:14px;color:var(--muted);}}
 .ps-note{{font-size:12.5px;padding:10px 12px;border-radius:var(--radius-sm);margin:8px 0;line-height:1.6;}}
 .ps-note.warn{{background:var(--warn-soft);color:#92400e;}}
 .ps-note.bad{{background:var(--bad-soft);color:#991b1b;}}
+.ps-list{{margin:6px 0 0;padding-left:20px;font-size:12.5px;line-height:1.7;}}
+.ps-note a{{color:inherit;text-decoration:underline;}}
 .cases-meta{{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:18px;}}
 .cases-meta div{{display:flex;align-items:center;gap:8px;}}
 .meta-k{{font-size:12px;color:var(--muted);}}
@@ -893,6 +1091,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   <div class='summary-item'><span class='k'>失败</span><span class='v' style='color:var(--bad)'>{reg.get('failed', 0)}</span></div>
   {gen_item}
   {ps_item}
+  {web_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
 
@@ -902,6 +1101,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 </div>
 
 {ps_card_html}
+
+{web_card_html}
 
 <div class='card'>
   <div class='card-title'>由需求生成的用例（预览） <span class='count'>{cases_count}</span></div>
@@ -993,6 +1194,21 @@ def cmd_run(args: argparse.Namespace) -> None:
                                          "summary": pf.get("summary", "")}
         _write_run_meta(pdir, **_meta_fields)
 
+    # ⑤ Web UI 冒烟（--web 开启）：独立门禁。
+    # 缺 web.yaml 时**不静默跳过**——静默跳过等于悄悄放松门禁，所以显式告警并记入 run_meta。
+    if getattr(args, "web", False):
+        if not (pdir / "web.yaml").is_file():
+            print(f"  [Web 冒烟] ⚠ 未执行：缺少 {pdir / 'web.yaml'}；"
+                  "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。", file=sys.stderr)
+            _meta_fields["web"] = {"executed": False,
+                                   "reason": "缺少 web.yaml，未执行"}
+        else:
+            wf = _step_web(pdir, browser=getattr(args, "browser", None))
+            _meta_fields["web"] = {"executed": True,
+                                   "all_pass": bool(wf.get("all_pass")),
+                                   "summary": wf.get("summary", "")}
+        _write_run_meta(pdir, **_meta_fields)
+
     run_store.insert_snapshot(args.id, reg, trigger="run")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
 
@@ -1048,6 +1264,25 @@ def cmd_perf_security(args: argparse.Namespace) -> None:
     sys.exit(0 if res.get("all_pass") else 1)
 
 
+def cmd_web(args: argparse.Namespace) -> None:
+    """Web UI 冒烟（独立子命令）。
+
+    门禁语义与核心回归一致：环境不可达 / 浏览器起不来 → 全 SKIP → all_pass=False，退出码 1。
+    """
+    meta = load_project(args.id)
+    pdir = PROJECTS_DIR / args.id
+    base_url = ((meta.get("env", {}) or {}).get("web_base_url")
+                or (meta.get("env", {}) or {}).get("base_url", ""))
+    print(f"== Web UI 冒烟：{args.id}（环境 {base_url or '未配置'}）==")
+    res = _step_web(pdir, only=getattr(args, "only", None),
+                    headed=bool(getattr(args, "headed", False)),
+                    browser=getattr(args, "browser", None))
+    # 同步刷新报告，让「Web UI 冒烟」卡片立即可见（核心回归可能尚未跑过）
+    cases = pdir / "artifacts" / "cases.md"
+    _step_report(args.id, pdir, cases if cases.is_file() else None, _read_regression(pdir))
+    sys.exit(0 if res.get("all_pass") else 1)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """跨项目总览看板：汇总各项目最近一次核心回归结果，作为交付质量门禁。"""
     pdirs = load_projects()
@@ -1072,6 +1307,7 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             "base_url": (meta.get("env", {}) or {}).get("base_url", ""),
             "reg": reg,
             "ps": _read_perf_security(pdir),   # ④ 性能与安全冒烟（可能未执行）
+            "web": _read_web(pdir),            # ⑤ Web UI 冒烟（可能未执行）
         })
 
     print(f"== 跨项目总览（{len(rows)} 个项目）==")
@@ -1092,6 +1328,10 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
             extra = (f" · P95 {ov.get('p95_ms')}ms / 错误率 "
                      f"{float(ov.get('error_rate') or 0) * 100:.2f}%" if ov else "")
             print(f"  {'':<16}{'':<22}性能与安全：{pg}{extra}")
+        wf = r.get("web")
+        if wf:
+            wg = "✅ 通过" if wf.get("all_pass") else "❌ 未通过"
+            print(f"  {'':<16}{'':<22}Web UI：{wg} · {wf.get('summary', '')}")
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     trs = []
@@ -1117,12 +1357,24 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
                          f"{float(_pov.get('error_rate') or 0) * 100:.2f}% · "
                          f"安全 {_s.get('passed_count', 0)}通过/{_s.get('failed', 0)}失败"
                          + (f"/{_s.get('warned')}提示" if _s.get("warned") else ""))
+        wf = r.get("web")
+        if not wf:
+            web_detail, web_badge = "<span class='muted'>未执行</span>", "<span class='muted'>—</span>"
+        else:
+            _wok = bool(wf.get("all_pass"))
+            web_badge = "通过 ✅" if _wok else "未通过 ❌"
+            web_detail = (f"{wf.get('passed', 0)}通过/{wf.get('failed', 0)}失败"
+                          f"/{wf.get('skipped', 0)}跳过"
+                          + (f" · 抖动 {wf.get('flaky')}" if wf.get("flaky") else "")
+                          + (f" · 配置问题 {len(wf.get('config_issues') or [])}"
+                             if wf.get("config_issues") else ""))
         trs.append(
             f"<tr class='{cls}'><td><b>{_h(r['pid'])}</b></td>"
             f"<td>{_h(r['name'])}</td><td>{_h(r['owner'])}</td>"
             f"<td><code>{_h(r['base_url'])}</code></td>"
             f"<td>{detail}</td><td class='gate-cell'>{badge}</td>"
             f"<td>{ps_detail}</td><td class='gate-cell'>{ps_badge}</td>"
+            f"<td>{web_detail}</td><td class='gate-cell'>{web_badge}</td>"
             f"<td><a href='projects/{_h(r['pid'])}/artifacts/report.html'>项目报告</a></td></tr>"
         )
 
@@ -1140,11 +1392,11 @@ td.gate-cell{{font-weight:700;white-space:nowrap;}}
 .muted{{color:#9ca3af;}}</style>
 </head><body>
 <h1>跨项目测试总览</h1>
-<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟</div>
-<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>明细</th></tr>
+<div class='meta'>生成时间：{now} · 项目数：{len(rows)} · 数据来源：各项目最近一次核心回归 / 性能与安全冒烟 / Web UI 冒烟</div>
+<table><tr><th>项目ID</th><th>名称</th><th>负责人</th><th>测试环境</th><th>核心回归</th><th>回归门禁</th><th>性能与安全</th><th>门禁</th><th>Web UI</th><th>门禁</th><th>明细</th></tr>
 {''.join(trs)}
 </table>
-<div class='meta'>重新生成：python project_manager.py dashboard · 性能与安全冒烟：python project_manager.py perf-security &lt;项目ID&gt;</div>
+<div class='meta'>重新生成：python project_manager.py dashboard · 性能与安全冒烟：python project_manager.py perf-security &lt;项目ID&gt; · Web UI 冒烟：python project_manager.py web &lt;项目ID&gt;</div>
 </body></html>"""
     out = ROOT / "projects_dashboard.html"
     out.write_text(html_doc, encoding="utf-8")
@@ -1234,6 +1486,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM 增强启用智能体多步自审编排（分析→初版→自评审→终版，质量更高但 4 次调用）；需配合 --llm")
     r.add_argument("--perf", action="store_true",
                    help="追加 ④ 性能与安全冒烟（并发延迟 + 鉴权/注入/泄露/配置检查）")
+    r.add_argument("--web", action="store_true",
+                   help="追加 ⑤ Web UI 冒烟（Playwright 声明式场景，需项目下存在 web.yaml）")
     r.set_defaults(func=cmd_run)
 
     ps = sub.add_parser("perf-security", help="④ 性能与安全冒烟（独立于核心回归）")
@@ -1242,6 +1496,14 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--users", type=int, help="并发数（覆盖 project.yaml 中的配置）")
     ps.add_argument("--iterations", type=int, help="每用户请求次数（覆盖配置）")
     ps.set_defaults(func=cmd_perf_security)
+
+    wb = sub.add_parser("web", help="Web UI 冒烟（Playwright 声明式场景，独立于核心回归）")
+    wb.add_argument("id")
+    wb.add_argument("--only", help="只跑指定场景名（或标签）")
+    wb.add_argument("--headed", action="store_true", help="有头模式（便于排查）")
+    wb.add_argument("--browser", choices=["chromium", "firefox", "webkit"],
+                    help="覆盖 web.yaml 中的浏览器")
+    wb.set_defaults(func=cmd_web)
 
     g = sub.add_parser("regression", help="仅核心业务回归")
     g.add_argument("id")

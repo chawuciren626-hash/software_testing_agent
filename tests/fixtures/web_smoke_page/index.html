@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Web 冒烟自检页</title>
+</head>
+<body>
+  <h1>工作台</h1>
+  <div data-test-subj="sidebar">侧边栏</div>
+  <form id="f">
+    <input data-test-subj="username" placeholder="用户名">
+    <input data-test-subj="password" type="password" placeholder="口令">
+    <button data-test-subj="submit" type="button">登录</button>
+  </form>
+  <script>
+    document.querySelector("[data-test-subj='submit']").addEventListener('click', function () {
+      var u = document.querySelector("[data-test-subj='username']").value;
+      document.querySelector("[data-test-subj='sidebar']").textContent = '欢迎 ' + (u || '访客');
+    });
+  </script>
+</body>
+</html>

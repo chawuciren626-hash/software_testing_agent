@@ -265,3 +265,171 @@ def test_index_has_perf_security_ui_hooks():
     html = client.get("/").get_data(as_text=True)
     for token in ("perf-security", "renderPerfSecPanel", "d_perfsec", "runPerfSecurity"):
         assert token in html, f"前端缺少 {token}"
+
+
+# ---------------------------------------------------------------------------
+# ⑤ Web UI 冒烟（Web 层）
+# ---------------------------------------------------------------------------
+def _mk_tmp_project_with_web(tmp_path, pid="demo", scenes: str = "scenarios: []\n"):
+    proj = _mk_tmp_project(tmp_path, pid)
+    (proj / "web.yaml").write_text(f"web:\n  {scenes}", encoding="utf-8")
+    return proj
+
+
+def test_web_endpoint_maps_options_to_flags(monkeypatch, tmp_path):
+    _mk_tmp_project_with_web(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(kind=kind, pid=pid, args=args, extra_args=extra_args) or "tid")
+    r = client.post("/api/projects/demo/web",
+                    json={"only": "smoke", "browser": "firefox", "headed": True})
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    assert captured["kind"] == "web"
+    assert captured["args"] == ["web", "demo"]
+    assert captured["extra_args"] == ["--only", "smoke", "--headed", "--browser", "firefox"]
+
+
+def test_web_endpoint_defaults_and_ignores_bad_values(monkeypatch, tmp_path):
+    _mk_tmp_project_with_web(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_spawn_task",
+        lambda kind, pid, args, scene=None, extra_args=None:
+            captured.update(extra_args=extra_args) or "tid")
+    # 非法浏览器 / only 为空 / headed 非真 → 全部忽略，用 web.yaml 的配置
+    r = client.post("/api/projects/demo/web",
+                    json={"only": "  ", "browser": "ie6", "headed": "no"})
+    assert r.status_code == 200
+    assert captured["extra_args"] == []
+
+
+def test_web_endpoint_unknown_project_404(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.post("/api/projects/nope/web")
+    assert r.status_code == 404
+
+
+def test_web_endpoint_without_web_yaml_returns_400(monkeypatch, tmp_path):
+    """缺 web.yaml 必须显式报错，而不是静默起一个必然失败的任务。"""
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.post("/api/projects/demo/web")
+    assert r.status_code == 400
+    assert "web.yaml" in r.get_json()["error"]
+
+
+def test_files_endpoint_exposes_web(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "web.json").write_text(
+        '{"all_pass": true, "summary": "ok"}', encoding="utf-8")
+    (proj / "web.yaml").write_text("web:\n  scenarios: []\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["web"]["all_pass"] is True
+    assert "web" in d["files"]          # web.yaml 可读可编辑
+
+
+def test_files_endpoint_web_absent_is_none(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    d = client.get("/api/projects/demo/files").get_json()
+    assert d["web"] is None
+    assert d["files"]["web"] == ""
+
+
+def test_projects_api_includes_web_field(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "web.json").write_text(
+        '{"all_pass": false, "summary": "x"}', encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = client.get("/api/projects").get_json()["projects"]
+    assert len(items) == 1
+    assert items[0]["web"]["all_pass"] is False
+
+
+def test_automation_api_includes_web_scenarios(monkeypatch, tmp_path):
+    """/api/automation 要把 web.yaml 的场景清单带上，并标出「无断言」的场景。"""
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "web.yaml").write_text(
+        "web:\n"
+        "  scenarios:\n"
+        "    - name: 登录\n"
+        "      tags: [smoke]\n"
+        "      steps:\n"
+        "        - goto: /login\n"
+        "        - expect_visible: \"body\"\n"
+        "    - name: 只点不断言\n"
+        "      steps:\n"
+        "        - goto: /\n"
+        "        - click: \"#x\"\n",
+        encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = client.get("/api/automation").get_json()["automations"]
+    assert len(items) == 1
+    ws = items[0]["web_scenarios"]
+    assert [s["name"] for s in ws] == ["登录", "只点不断言"]
+    assert ws[0]["assertions"] == 1 and ws[0]["tags"] == ["smoke"]
+    assert ws[1]["assertions"] == 0     # 前端据此打「无断言」标记
+    assert items[0]["has_web_yaml"] is True
+
+
+def test_automation_api_without_web_yaml(monkeypatch, tmp_path):
+    _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    items = client.get("/api/automation").get_json()["automations"]
+    assert items[0]["web_scenarios"] == []
+    assert items[0]["has_web_yaml"] is False
+
+
+# ---- 失败证据静态路由（截图 / 可复现脚本） ----
+def test_evidence_routes_serve_shot_and_spec(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    shots = proj / "artifacts" / "web_shots"
+    shots.mkdir(parents=True)
+    (shots / "a-FAIL.png").write_bytes(b"\x89PNG")
+    (proj / "artifacts" / "web_repro_a.spec.ts").write_text("// x", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.get("/reports/demo/web_shots/a-FAIL.png").status_code == 200
+    assert client.get("/reports/demo/web_repro_a.spec.ts").status_code == 200
+
+
+def test_evidence_routes_reject_non_evidence_suffix(monkeypatch, tmp_path):
+    """白名单后缀：不允许把证据路由变成任意文件读取入口。"""
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "report.py").write_text("print(1)", encoding="utf-8")
+    (proj / "project.yaml").write_text("project_id: demo\n", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    assert client.get("/reports/demo/report.py").status_code == 404
+    # 上跳穿越同样必须被拒
+    assert client.get("/reports/demo/..%2f..%2fproject.yaml").status_code == 404
+    assert client.get("/reports/demo/..%5cproject.yaml").status_code == 404
+
+
+def test_evidence_routes_do_not_shadow_report_html(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "artifacts" / "report.html").write_text("<h1>ok</h1>", encoding="utf-8")
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.get("/reports/demo/report.html")
+    assert r.status_code == 200
+    assert b"ok" in r.get_data()
+
+
+def test_index_has_web_smoke_ui_hooks():
+    """Web 冒烟的前端入口/渲染/证据链接必须都在，否则功能等于没接。"""
+    html = client.get("/").get_data(as_text=True)
+    for token in ("web:p=>", "renderWebPanel", "runWeb", 'id="d_web"',
+                  'id="d_webyaml"', 'id="btnWebWrap"', 'data-tab="web"',
+                  "repUrl", "webYamlValue", "has_web_yaml"):
+        assert token in html, f"前端缺少 {token}"
+    # 详情弹窗是静态 HTML：里面不能残留模板插值，否则会原样显示成 ${svg('...')} Web 冒烟
+    modal = html.split('id="detailMask"')[1].split("<!-- 完整报告弹窗")[0]
+    assert "${svg(" not in modal, "详情弹窗静态 HTML 里残留了模板插值（会原样显示）"

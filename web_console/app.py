@@ -73,6 +73,11 @@ if FROZEN:
             encoding="utf-8")
 
 app = Flask(__name__, template_folder=str(RES_DIR / "web_console" / "templates"))
+# 改了 templates/index.html 后刷新页面即生效。
+# 否则 debug=False 时 Jinja 会缓存模板，出现"明明改了前端却没变化"的假象——
+# 排查时极容易被带偏（以为是浏览器缓存，其实是服务端模板缓存）。
+app.jinja_env.auto_reload = True
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 def pm_script() -> str:
@@ -188,6 +193,18 @@ def _read_perf_security(pdir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _read_web(pdir: Path) -> Optional[Dict[str, Any]]:
+    """读取 ⑤ Web UI 冒烟结果（未执行返回 None）。"""
+    f = pdir / "artifacts" / "web.json"
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 @app.get("/api/projects")
 def api_projects() -> Any:
     # 停用的项目默认不展示（也不参与看板/门禁）；?include_disabled=1 时一并列出，
@@ -208,6 +225,7 @@ def api_projects() -> Any:
             "has_report": (pdir / "artifacts" / "report.html").is_file(),
             "reg": _read_regression(pdir),
             "perf_security": _read_perf_security(pdir),
+            "web": _read_web(pdir),
             "disabled": pm.is_disabled(pdir),
         })
     return jsonify({"projects": items})
@@ -217,6 +235,7 @@ def api_projects() -> Any:
 EDITABLE_FILES = {
     "requirements": "requirements.md",
     "regression": "regression.yaml",
+    "web": "web.yaml",
 }
 
 
@@ -240,7 +259,7 @@ def api_project_files(pid: str) -> Any:
         except Exception:
             perf_sec = None
     return jsonify({"ok": True, "files": out, "run_meta": pm._read_run_meta(pdir),
-                    "perf_security": perf_sec})
+                    "perf_security": perf_sec, "web": _read_web(pdir)})
 
 
 def _llm_available() -> bool:
@@ -479,6 +498,33 @@ def api_perf_security(pid: str) -> Any:
     return jsonify({"ok": True, "task_id": tid})
 
 
+@app.post("/api/projects/<pid>/web")
+def api_web(pid: str) -> Any:
+    """⑤ Web UI 冒烟（Playwright 声明式场景）。
+
+    body 可选：{only: "场景名或标签", headed: bool, browser: "chromium|firefox|webkit"}。
+    门禁语义与回归一致：环境不可达 / 浏览器起不来 → 全 SKIP → 退出码非零（防 CI 假绿）。
+    """
+    pdir = pm.PROJECTS_DIR / pid
+    if not (pdir / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    if not (pdir / "web.yaml").is_file():
+        return jsonify({"ok": False,
+                        "error": "缺少 web.yaml：请先在「项目详情 → Web 场景」中声明场景"}), 400
+    body = request.get_json(silent=True) or {}
+    extra: List[str] = []
+    only = str(body.get("only") or "").strip()
+    if only:
+        extra += ["--only", only]
+    if body.get("headed") in (True, "1", "true", "yes"):
+        extra += ["--headed"]
+    browser = str(body.get("browser") or "").strip().lower()
+    if browser in ("chromium", "firefox", "webkit"):
+        extra += ["--browser", browser]
+    tid = _spawn_task("web", pid, ["web", pid], extra_args=extra)
+    return jsonify({"ok": True, "task_id": tid})
+
+
 @app.post("/api/projects/<pid>/rerun_scene")
 def api_rerun_scene(pid: str) -> Any:
     """重跑单个核心场景（结果合并回 regression.json，不覆盖完整报告）。"""
@@ -701,6 +747,39 @@ def _load_regression_scenarios(pdir: Path) -> List[Dict[str, Any]]:
         return []
 
 
+def _load_web_scenarios(pdir: Path) -> List[Dict[str, Any]]:
+    """读取 web.yaml 里的 Web 场景清单（只给前端展示必要字段）。
+
+    只暴露场景名/标签/步骤数，不外泄选择器细节与 {{username}} 之类占位符。
+    """
+    wy = pdir / "web.yaml"
+    if not wy.is_file():
+        return []
+    try:
+        import yaml  # noqa
+    except ImportError:
+        return []
+    try:
+        data = yaml.safe_load(wy.read_text(encoding="utf-8")) or {}
+        w = data.get("web", data) or {}
+        out: List[Dict[str, Any]] = []
+        for it in (w.get("scenarios") or []):
+            if not isinstance(it, dict):
+                continue
+            steps = it.get("steps") or []
+            n_assert = sum(1 for s in steps if isinstance(s, dict) and
+                           any(str(k).startswith("expect_") for k in s))
+            out.append({
+                "name": it.get("name", ""),
+                "tags": [str(t) for t in (it.get("tags") or [])],
+                "steps": len(steps) if isinstance(steps, list) else 0,
+                "assertions": n_assert,
+            })
+        return out
+    except Exception:
+        return []
+
+
 @app.get("/api/automation")
 def api_automation() -> Any:
     items: List[Dict[str, Any]] = []
@@ -713,6 +792,9 @@ def api_automation() -> Any:
             "base_url": (meta.get("env") or {}).get("base_url", ""),
             "scenarios": _load_regression_scenarios(pdir),
             "reg": reg,
+            "web_scenarios": _load_web_scenarios(pdir),
+            "web": _read_web(pdir),
+            "has_web_yaml": (pdir / "web.yaml").is_file(),
         })
     return jsonify({"automations": items})
 
@@ -830,6 +912,50 @@ def dashboard_report() -> Any:
     f = DATA_ROOT / "projects_dashboard.html"
     if not f.is_file():
         return "看板尚未生成，请点击右上角“刷新看板”", 404
+    return send_file(f)
+
+
+# ----------------------------------------------------------------------------
+# 失败证据静态服务（Web 冒烟截图 / 可复现脚本）
+# ----------------------------------------------------------------------------
+# 白名单后缀：只放行浏览器证据，避免把这里变成任意文件读取入口。
+_EVIDENCE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".spec.ts", ".txt", ".json")
+
+
+def _safe_evidence_path(pid: str, name: str, sub: str = "") -> Optional[Path]:
+    """把 URL 里的文件名解析成真实的 artifacts 路径；任何可疑输入直接拒绝。"""
+    # pid 与文件名都不允许出现路径分隔符或上跳，杜绝 ../../ 穿越
+    for part in (pid, name):
+        if not part or "/" in part or "\\" in part or ".." in part:
+            return None
+    if not name.lower().endswith(_EVIDENCE_SUFFIXES):
+        return None
+    art = (pm.PROJECTS_DIR / pid / "artifacts").resolve()
+    f = (art / sub / name).resolve() if sub else (art / name).resolve()
+    try:
+        f.relative_to(art)   # 解析后必须仍在 artifacts 内（防符号链接逃逸）
+    except ValueError:
+        return None
+    return f if f.is_file() else None
+
+
+@app.get("/reports/<pid>/web_shots/<name>")
+def project_web_shot(pid: str, name: str) -> Any:
+    """Web 冒烟失败截图（artifacts/web_shots/*.png）。"""
+    f = _safe_evidence_path(pid, name, sub="web_shots")
+    if not f:
+        return "证据文件不存在", 404
+    return send_file(f)
+
+
+@app.get("/reports/<pid>/<name>")
+def project_artifact_file(pid: str, name: str) -> Any:
+    """项目 artifacts/ 下的证据文件（如 web_repro_*.spec.ts）。"""
+    if name == "report.html":     # 交给更具体的路由处理
+        return "报告尚未生成，请先执行全流程测试", 404
+    f = _safe_evidence_path(pid, name)
+    if not f:
+        return "文件不存在或不允许访问", 404
     return send_file(f)
 
 

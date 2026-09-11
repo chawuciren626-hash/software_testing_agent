@@ -102,6 +102,7 @@ svg{display:block;}
 .badge.info{background:var(--info-soft);color:var(--info);}
 .badge.purple{background:var(--purple-soft);color:var(--purple);}
 .badge.gray{background:var(--border-2);color:var(--muted);}
+.badge.warn{background:var(--warn-soft);color:var(--warn);}
 .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:6px;background:var(--bg);color:var(--ink-2);font-weight:600;}
 .chip.get{background:#e0f2fe;color:#0369a1;} .chip.post{background:#fae8ff;color:#a21caf;}
 .chip.put{background:#fef3c7;color:#b45309;} .chip.del{background:#fee2e2;color:#b91c1c;}
@@ -320,6 +321,23 @@ svg{display:block;}
 .ps-tag.warn{background:var(--warn-soft);color:var(--warn);}
 .ps-sel,.ps-num{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;}
 .ps-num{width:66px;}
+/* 详情弹窗里的编辑区（需求/回归/用例/记忆/Web 场景）：统一成设计系统里的等宽文本域 */
+#d_requirements,#d_regression,#d_cases,#d_lessons,#d_webyaml{width:100%;box-sizing:border-box;
+  border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--panel);
+  color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.75;outline:none;
+  resize:vertical;min-height:280px;max-height:46vh;transition:border-color .15s,box-shadow .15s;}
+#d_requirements:focus,#d_regression:focus,#d_webyaml:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+#d_webyaml{min-height:190px;max-height:30vh;margin-top:12px;}
+/* ---------- Web UI 冒烟面板（⑤） ---------- */
+.web-sec{margin-bottom:12px;}
+.web-scroll{overflow-x:auto;}
+.web-reason{font-size:11.5px;color:var(--bad);line-height:1.7;max-width:320px;word-break:break-word;}
+.web-reason.skip{color:var(--muted);}
+.web-ev{font-size:11px;margin-top:3px;}
+.web-ev a{color:var(--primary-600);text-decoration:none;}
+.web-ev a:hover{text-decoration:underline;}
+.ps-tag.flaky{background:var(--warn-soft);color:var(--warn);}
+.ps-tag.skip{background:var(--border-2);color:var(--muted);}
 .hint{font-size:12px;color:var(--muted);line-height:1.6;}
 </style>
 </head>
@@ -525,12 +543,15 @@ svg{display:block;}
       <button class="btn tab sm" data-tab="cases" onclick="switchTab('cases')">已生成用例</button>
       <button class="btn tab sm" data-tab="lessons" onclick="switchTab('lessons')">情景记忆</button>
       <button class="btn tab sm" data-tab="perfsec" onclick="switchTab('perfsec')">性能与安全</button>
+      <button class="btn tab sm" data-tab="web" onclick="switchTab('web')">Web 冒烟</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
     <textarea id="d_cases" class="mono" style="display:none" readonly></textarea>
     <textarea id="d_lessons" class="mono" style="display:none" readonly></textarea>
     <div id="d_perfsec" class="ps-panel" style="display:none"></div>
+    <div id="d_web" class="ps-panel" style="display:none"></div>
+    <textarea id="d_webyaml" class="mono" style="display:none"></textarea>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
     <div class="foot">
@@ -550,7 +571,20 @@ svg{display:block;}
         </select>
         <input id="psUsers" class="ps-num" type="number" min="1" max="200" placeholder="并发" title="并发数，留空用 project.yaml 配置">
         <input id="psIter" class="ps-num" type="number" min="1" max="200" placeholder="次数" title="每用户请求次数，留空用配置">
-        <button class="btn" onclick="runPerfSecurity(true)" title="④ 性能与安全冒烟：只压只读接口，环境不可达时按未通过处理">${svg('shield')} 性能与安全</button>
+        <button class="btn" onclick="runPerfSecurity(true)" title="④ 性能与安全冒烟：只压只读接口，环境不可达时按未通过处理"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg> 性能与安全</button>
+      </span>
+      <span id="btnWebWrap" style="display:none;align-items:center;gap:6px">
+        <input id="webOnly" class="ps-num" style="width:150px" placeholder="只跑场景名/标签" title="留空跑全部场景；也可填 tags 里的标签（如 smoke）">
+        <select id="webBrowser" class="ps-sel" title="浏览器，默认用 web.yaml 配置">
+          <option value="">默认浏览器</option>
+          <option value="chromium">chromium</option>
+          <option value="firefox">firefox</option>
+          <option value="webkit">webkit</option>
+        </select>
+        <label class="llm-toggle" style="margin:0" title="有头模式：弹出浏览器窗口，便于排查失败场景">
+          <input type="checkbox" id="cbHeaded"><span>有头</span>
+        </label>
+        <button class="btn" onclick="runWeb(true)" title="⑤ Web UI 冒烟：跑浏览器关键路径；无断言的场景不算绿，环境不可达按未通过处理"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="M12 12l4-3"/><path d="M3 12h2M19 12h2M12 3v2"/></svg> Web 冒烟</button>
       </span>
       <button class="btn primary" id="btnRunPipeline" onclick="runPipelineFromDetail()" title="保存当前编辑内容后，按上面勾选的生成模式跑完整流程（需求→用例→接口→回归→报告）">跑全流程</button>
       <button class="btn" id="btnSaveFiles" onclick="saveFiles()">保存需求与配置</button>
@@ -648,7 +682,8 @@ function showToast(msg,type=''){
     setTimeout(()=>el.remove(),320);},3600);
 }
 /* 任务类型中文名（任务页 / 提示条共用） */
-const KIND_LABEL={run:'全流程',regression:'核心回归',rerun:'单场景重跑',dashboard:'跨项目看板'};
+const KIND_LABEL={run:'全流程',regression:'核心回归',rerun:'单场景重跑',dashboard:'跨项目看板',
+                  'perf-security':'性能与安全','web':'Web 冒烟'};
 function kindLabel(k){return KIND_LABEL[k]||k||'任务';}
 const ICONS={
   play:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
@@ -783,17 +818,30 @@ async function renderProjects(){
       psBadge=`<span class="badge ${pok?'ok':'bad'}" title="${esc(tip)}">`+
               `${svg('shield')} ${pok?'性能安全通过':'性能安全未通过'}</span>`;
     }
+    // ⑤ Web UI 冒烟：独立门禁，卡片上给概括徽标
+    const wb=p.web;
+    let webBadge='';
+    if(wb){
+      const wok=!!wb.all_pass;
+      const nIssue=(wb.config_issues||[]).length;
+      const tip=`场景 ${wb.passed||0} 通过 / ${wb.failed||0} 失败 / ${wb.skipped||0} 跳过`+
+                `　断言 ${wb.assertions||0}`+(nIssue?`　配置问题 ${nIssue} 项`:'')+
+                (wb.flaky?`　抖动 ${wb.flaky}`:'');
+      webBadge=`<span class="badge ${wok?'ok':'bad'}" title="${esc(tip)}">`+
+               `${svg('gauge')} ${wok?'Web 通过':'Web 未通过'}</span>`;
+    }
     const div=document.createElement('div');
     div.className='card'+(p.disabled?' disabled':'');
     const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
     div.innerHTML=`
       <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}</div></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}</div></div>
       <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
       <div class="ops">
         <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','regression')">${svg('refresh')} 跑核心回归</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','perf-security')" title="④ 性能与安全冒烟：并发延迟指标 + 鉴权/注入/泄露/配置安全检查">${svg('shield')} 性能与安全</button>
+        <button class="btn sm" onclick="exec('${jsq(p.pid)}','web')" title="⑤ Web UI 冒烟：跑 web.yaml 声明的浏览器关键路径（无断言的场景不算绿）">${svg('gauge')} Web 冒烟</button>
         <button class="btn sm" onclick="openDetail('${jsq(p.pid)}')">${svg('edit')} 需求/配置</button>
         <button class="btn sm" onclick="openReport('/reports/${jsq(p.pid)}/report.html')" ${p.has_report?'':'disabled'}>${svg('eye')} 查看报告</button>
         <button class="btn sm" title="${p.disabled?'恢复该项目（重新参与回归与看板）':'停用后不参与回归与看板，数据保留'}"
@@ -808,7 +856,8 @@ async function renderProjects(){
 async function exec(pid,kind,body){
   const URLS={run:p=>`/api/projects/${p}/run`,
               regression:p=>`/api/projects/${p}/regression`,
-              'perf-security':p=>`/api/projects/${p}/perf-security`};
+              'perf-security':p=>`/api/projects/${p}/perf-security`,
+              web:p=>`/api/projects/${p}/web`};
   const url=(URLS[kind]||URLS.regression)(pid);
   const opts={method:'POST'};
   if(body){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify(body);}
@@ -832,6 +881,29 @@ async function runPerfSecurity(fromDetail){
   const body={}; if(only)body.only=only; if(users>0)body.users=users; if(iter>0)body.iterations=iter;
   closeDetail();
   exec(pid,'perf-security',body);
+}
+// ⑤ Web UI 冒烟（从项目详情页触发；先落盘 web.yaml，保证跑的就是当前编辑的场景）
+// 读取 web.yaml 编辑器内容：占位提示文本不能当成真实配置写盘（否则会写出一个假文件）
+function webYamlValue(){
+  const el=document.getElementById('d_webyaml');
+  const v=(el&&el.value)||'';
+  return v.startsWith('（暂无 web.yaml') ? '' : v;
+}
+async function runWeb(fromDetail){
+  const pid=fromDetail?detailPid:null;
+  if(!pid)return;
+  const yv=webYamlValue();
+  try{
+    await fetch(`/api/projects/${pid}/files`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(yv?{web:yv}:{})});
+  }catch(e){}
+  const only=(document.getElementById('webOnly')||{}).value||'';
+  const browser=(document.getElementById('webBrowser')||{}).value||'';
+  const headed=!!(document.getElementById('cbHeaded')&&document.getElementById('cbHeaded').checked);
+  const body={}; if(only.trim())body.only=only.trim(); if(browser)body.browser=browser; if(headed)body.headed=true;
+  closeDetail();
+  exec(pid,'web',body);
 }
 // 从项目详情「跑全流程」：先落盘当前编辑内容，再按勾选的生成模式执行
 async function runPipelineFromDetail(){
@@ -995,13 +1067,42 @@ async function renderAutomation(){
     }).join('');
     const div=document.createElement('div');
     div.className='auto-proj';
+    // ⑤ Web UI 场景（来自 web.yaml）：与接口场景并列展示，结果取最近一次 Web 冒烟
+    const wResMap={};
+    if(a.web&&a.web.scenarios) a.web.scenarios.forEach(x=>wResMap[x.name]=x);
+    let webBlock='';
+    if((a.web_scenarios||[]).length){
+      const wok=a.web?!!a.web.all_pass:null;
+      const wbadge=a.web?`<span class="badge ${wok?'ok':'bad'}">● ${a.web.passed||0}/${a.web.total||0} 通过</span>`
+                        :'<span class="badge none">未执行</span>';
+      const wrows=a.web_scenarios.map(s=>{
+        const hit=wResMap[s.name];
+        let rb='<span class="badge gray">未执行</span>';
+        if(hit){rb=hit.result==='PASS'?'<span class="badge ok">通过</span>'
+              :(hit.result==='SKIP'?'<span class="badge skip">跳过</span>':'<span class="badge bad">失败</span>');}
+        const tags=(s.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join(' ');
+        // 没有断言的场景不算绿：提前在界面上标出来，不必等跑完才知道
+        const noAssert=s.assertions?'':'<span class="badge warn" title="没有任何 expect_* 断言：该场景即使操作全部成功也只记「跳过」，不会判绿">无断言</span>';
+        return `<div class="scn"><div style="flex:1;min-width:0"><div class="sname">${esc(s.name||'(未命名)')}</div>
+            <div>${tags||'<span class="sroute">—</span>'} <span class="sroute">${s.steps} 步 / ${s.assertions} 断言</span></div></div>
+            ${noAssert}${rb}</div>`;
+      }).join('');
+      webBlock=`<div class="web-sec"><div style="display:flex;align-items:center;gap:8px;margin:12px 0 6px">
+          <div class="ps-title" style="margin:0">Web UI 场景（浏览器）</div>${wbadge}
+          <button class="btn sm" style="margin-left:auto" onclick="exec('${jsq(a.pid)}','web')" title="⑤ Web UI 冒烟：跑 web.yaml 声明的浏览器关键路径">${svg('gauge')} 运行 Web 冒烟</button>
+        </div>${wrows}</div>`;
+    }else if(a.has_web_yaml){
+      webBlock=`<div class="web-sec"><div class="ps-title">Web UI 场景（浏览器）</div>
+        <div class="hint" style="padding:4px 2px">web.yaml 尚未声明场景：在「需求/配置 → Web 冒烟」页补充后即可运行。</div></div>`;
+    }
     div.innerHTML=`
       <div class="ph">
         <div><div class="pname">${esc(a.name||a.pid)}</div><div class="penv">${esc(a.base_url)} · ${a.scenarios.length} 个核心场景</div></div>
         <div style="display:flex;gap:10px;align-items:center">${badge}
           <button class="btn sm primary" onclick="exec('${a.pid}','regression')">${svg('refresh')} 运行核心回归</button></div>
       </div>
-      ${scns||'<div class="hint" style="padding:8px 2px">尚无 regression.yaml 场景</div>'}`;
+      ${scns||'<div class="hint" style="padding:8px 2px">尚无 regression.yaml 场景</div>'}
+      ${webBlock}`;
     list.appendChild(div);
   });
   const passed=d.automations.filter(a=>a.reg&&a.reg.all_pass&&a.reg.total>0).length;
@@ -1593,6 +1694,7 @@ async function openDetail(pid){
   document.getElementById('d_requirements').value=d.files.requirements||'（暂无 requirements.md）';
   document.getElementById('d_regression').value=d.files.regression||'（暂无 regression.yaml）';
   document.getElementById('d_cases').value=d.files.cases||'（尚未生成用例，请先跑一次全流程）';
+  document.getElementById('d_webyaml').value=d.files.web||'（暂无 web.yaml：可点「保存需求与配置」创建空文件，或按 extensions/web_testing/run_web.py 文件头的示例手写场景）';
   window.__runMeta=d.run_meta||null;   // 上次运行的生成方式（模式/是否注入易错点），供「已生成用例」页提示
   // 拉取情景记忆（P2 历史失败根因 / 重点覆盖清单）
   try {
@@ -1604,6 +1706,8 @@ async function openDetail(pid){
   } catch(e){ document.getElementById('d_lessons').value = '（读取情景记忆失败）'; }
   // ④ 性能与安全结果（可能未执行 → 面板给出引导）
   renderPerfSecPanel(d.perf_security||null);
+  // ⑤ Web UI 冒烟结果（可能未执行 → 面板给出引导）
+  renderWebPanel(d.web||null);
   // 拉取 LLM 可用性，决定是否展示「LLM 智能生成」开关
   try{
     const s=await fetch('/api/llm/status'); const sd=await s.json();
@@ -1617,21 +1721,28 @@ async function openDetail(pid){
   document.getElementById('detailMask').classList.add('show');
 }
 function switchTab(tab){
-  ['requirements','regression','cases','lessons','perfsec'].forEach(t=>{
+  ['requirements','regression','cases','lessons','perfsec','web'].forEach(t=>{
     const el=document.getElementById('d_'+t);
     el.style.display = t===tab ? (t==='perfsec'?'block':'block') : 'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
     if(b)b.classList.toggle('active',t===tab);
   });
+  // web.yaml 编辑器只跟随 Web 冒烟页显示
+  const wy=document.getElementById('d_webyaml');
+  if(wy) wy.style.display = tab==='web' ? 'block' : 'none';
   const gen=document.getElementById('btnGenCases');
   if(gen) gen.style.display=tab==='cases'?'':'none';
   const psWrap=document.getElementById('btnPerfSecWrap');
   if(psWrap) psWrap.style.display=tab==='perfsec'?'':'none';
+  const wWrap=document.getElementById('btnWebWrap');
+  if(wWrap) wWrap.style.display=tab==='web'?'':'none';
   let hint=tab==='cases'
     ? '用例由需求生成（规则版：每条需求拆功能/边界/异常三件套）。点「立即生成用例」可按当前需求重新生成。'
     : (tab==='perfsec'
       ? '④ 性能与安全冒烟：性能给并发/延迟分位/错误率/吞吐；安全查鉴权、注入、错误回显与响应头。环境不可达时按未通过处理（避免假绿）。'
-      : '可直接编辑保存；保存后下一次执行即生效。');
+      : (tab==='web'
+        ? '⑤ Web UI 冒烟：下方直接编辑 web.yaml（定位器优先 data-test-subj，禁止 XPath / :nth-child；每个场景必须有 expect_* 断言，否则记跳过不算绿）。'
+        : '可直接编辑保存；保存后下一次执行即生效。'));
   const rm=window.__runMeta;
   if(tab==='cases'&&rm&&rm.mode){
     const extra=(rm.lessons_injected?' · 注入历史易错点':'')+(rm.cases?` · ${rm.cases} 条用例`:'');
@@ -1698,6 +1809,73 @@ function renderPerfSecPanel(ps){
   h+=`<div class="ps-sub" style="margin-top:10px">执行时间：${esc(ps.generated_at||'')} · 环境 ${esc(ps.base_url||'')}</div>`;
   box.innerHTML=h;
 }
+
+/* 渲染「Web UI 冒烟」面板（数据来自 /api/projects/<pid>/files 的 web） */
+function renderWebPanel(w){
+  const box=document.getElementById('d_web');
+  if(!box) return;
+  if(!w){
+    box.innerHTML=`<div class="ps-empty">尚未执行 Web UI 冒烟。<br>点右下角「Web 冒烟」按钮开始（先跑通 web.yaml 里声明的浏览器关键路径）。</div>`;
+    return;
+  }
+  const ok=!!w.all_pass;
+  const base=w.baseline||{};
+  let h=`<div class="ps-head ${ok?'ok':'bad'}">
+      <span class="ps-verdict">${ok?'通过':'未通过'}</span>
+      <span class="ps-sum">${esc(w.summary||'')}</span></div>`;
+  // 基线未通过：场景其实没执行，不能说成"用例全挂"
+  if(base && base.ok===false){
+    h+=`<div class="ps-warn">基线未通过：${esc(base.reason||'')}<br>此状态下场景未实际执行，结果不计为产品缺陷，但门禁按未通过处理。</div>`;
+  }else if(base && base.reason){
+    h+=`<div class="ps-sub">基线：${esc(base.reason)}</div>`;
+  }
+  // 配置/门禁问题：必须显式列出，否则等于悄悄放松门禁
+  if(Array.isArray(w.config_issues)&&w.config_issues.length){
+    h+=`<div class="ps-warn"><b>配置 / 门禁问题 ${w.config_issues.length} 项</b>（会让门禁失真，须先修）：<br>`
+      + w.config_issues.map(x=>esc(x)).join('<br>') + `</div>`;
+  }
+  const kpi=(v,k,color)=>`<div><b${color?` style="color:${color}"`:''}>${v}</b><span>${k}</span></div>`;
+  h+=`<div class="ps-kpis">
+    ${kpi(w.passed||0,'通过','var(--ok)')}
+    ${kpi(w.failed||0,'失败','var(--bad)')}
+    ${kpi(w.skipped||0,'跳过','')}
+    ${kpi(w.assertions||0,'断言数','')}
+    ${kpi(w.flaky||0,'抖动','var(--warn)')}</div>`;
+  // 场景表
+  h+=`<div class="ps-title">场景</div>`;
+  if(!(w.scenarios||[]).length){
+    h+=`<div class="ps-warn">web.yaml 未声明任何场景。</div>`;
+  }else{
+    const rows=(w.scenarios||[]).map(s=>{
+      const cls=s.result==='PASS'?'ok':(s.result==='SKIP'?'skip':'bad');
+      const label={PASS:'通过',FAIL:'失败',SKIP:'跳过'}[s.result]||s.result;
+      const fs=s.failed_step?`<div class="web-ev">失败步骤：第 ${s.failed_step.index} 步 ${esc(s.failed_step.action)} → ${esc(s.failed_step.target||'')}</div>`:'';
+      let ev='';
+      const wpid=w.project_id||detailPid||'';
+      (s.screenshots||[]).forEach((p,i)=>{ev+=`<a href="${repUrl(wpid,p,p)}" target="_blank">截图${i+1}</a> `;});
+      if(s.repro) ev+=`<a href="${repUrl(wpid,s.repro,s.repro)}" target="_blank">可复现脚本</a>`;
+      const flaky=s.flaky?`<span class="ps-tag flaky">抖动</span> `:'';
+      const reason=s.reason?`<div class="web-reason ${cls==='skip'?'skip':''}">${esc(s.reason)}</div>`:'';
+      return `<tr class="${cls}"><td>${esc(s.name)}</td>
+        <td class="mono">${esc((s.tags||[]).join('、')||'—')}</td>
+        <td>${s.assertions||0}</td><td>${s.duration_ms||0}ms</td>
+        <td><span class="ps-tag ${cls}">${label}</span> ${flaky}</td>
+        <td>${reason}${fs}${ev?`<div class="web-ev">${ev}</div>`:''}</td></tr>`;
+    }).join('');
+    h+=`<div class="web-scroll"><table class="ps-tbl">
+      <tr><th>场景</th><th>标签</th><th>断言</th><th>耗时</th><th>结果</th><th>说明 / 证据</th></tr>
+      ${rows}</table></div>`;
+  }
+  h+=`<div class="ps-sub" style="margin-top:10px">执行时间：${esc(w.generated_at||'')} · 地址 ${esc(w.base_url||'（未配置）')} · ${esc(w.browser||'')} ${w.headless?'无头':'有头'}</div>`;
+  box.innerHTML=h;
+}
+/* 失败证据文件在项目 artifacts/ 下；统一走 /reports/<pid>/ 静态路由，
+   截图在 web_shots/ 子目录、可复现脚本在 artifacts/ 根目录。 */
+function repUrl(pid,name,rel){
+  const f=String(rel||name||'').split(/[\\/]/).pop();
+  const isImg=/\.(png|jpe?g|webp)$/i.test(f);
+  return `/reports/${encodeURIComponent(pid)}/${isImg?'web_shots/':''}${encodeURIComponent(f)}`;
+}
 /* 按当前需求文本立即生成用例，无需跑全流程 */
 async function generateCases(){
   if(!detailPid)return;
@@ -1737,7 +1915,9 @@ function closeDetail(){document.getElementById('detailMask').classList.remove('s
 async function saveFiles(){
   if(!detailPid)return;
   const btn=document.getElementById('btnSaveFiles'); btn.disabled=true; btn.textContent='保存中…';
-  const body={requirements:document.getElementById('d_requirements').value,regression:document.getElementById('d_regression').value};
+  const body={requirements:document.getElementById('d_requirements').value,
+              regression:document.getElementById('d_regression').value};
+  const yv=webYamlValue(); if(yv) body.web=yv;   // 只在编辑过（非占位）时保存 web.yaml
   const r=await fetch(`/api/projects/${detailPid}/files`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();
   btn.disabled=false; btn.textContent='保存需求与配置';
