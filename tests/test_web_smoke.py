@@ -65,3 +65,25 @@ def test_cases_endpoint_llm_false_uses_rule(monkeypatch, tmp_path):
     d = r.get_json()
     assert d["ok"] and d["llm_used"] is False and called["llm"] is False
     assert "| REQ-001-F |" in d["markdown"]  # 规则版产物
+
+
+def test_lessons_endpoint_with_and_without_file(monkeypatch, tmp_path):
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    # 无 lessons.md -> 返回 has=False 且 content 为空
+    r0 = client.get("/api/projects/demo/lessons")
+    assert r0.status_code == 200
+    d0 = r0.get_json()
+    assert d0["ok"] and d0["has"] is False and d0["content"] == ""
+    # 写入 lessons.md -> 返回内容
+    (proj / "lessons.md").write_text("# 情景记忆\n1. **登录失败锁定** —— 历史失败 3 次\n", encoding="utf-8")
+    r1 = client.get("/api/projects/demo/lessons")
+    assert r1.status_code == 200
+    d1 = r1.get_json()
+    assert d1["ok"] and d1["has"] is True and "登录失败锁定" in d1["content"]
+
+
+def test_lessons_endpoint_unknown_project(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    r = client.get("/api/projects/nope/lessons")
+    assert r.status_code == 404

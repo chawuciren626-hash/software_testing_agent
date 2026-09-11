@@ -494,10 +494,12 @@ svg{display:block;}
       <button class="btn tab sm active" data-tab="requirements" onclick="switchTab('requirements')">需求</button>
       <button class="btn tab sm" data-tab="regression" onclick="switchTab('regression')">回归配置</button>
       <button class="btn tab sm" data-tab="cases" onclick="switchTab('cases')">已生成用例</button>
+      <button class="btn tab sm" data-tab="lessons" onclick="switchTab('lessons')">情景记忆</button>
     </div>
     <textarea id="d_requirements" class="mono" style="display:none"></textarea>
     <textarea id="d_regression" class="mono" style="display:none"></textarea>
     <textarea id="d_cases" class="mono" style="display:none" readonly></textarea>
+    <textarea id="d_lessons" class="mono" style="display:none" readonly></textarea>
     <div class="hint" id="d_hint">需求/回归配置可直接编辑并保存；用例由全流程自动生成，只读。</div>
     <div class="err-msg" id="detailErr"></div>
     <div class="foot">
@@ -1496,7 +1498,15 @@ async function openDetail(pid){
   document.getElementById('d_requirements').value=d.files.requirements||'（暂无 requirements.md）';
   document.getElementById('d_regression').value=d.files.regression||'（暂无 regression.yaml）';
   document.getElementById('d_cases').value=d.files.cases||'（尚未生成用例，请先跑一次全流程）';
-  // 拉取 LLM 可用性，决定是否展示「Gemini 智能生成」开关
+  // 拉取情景记忆（P2 历史失败根因 / 重点覆盖清单）
+  try {
+    const lr = await fetch(`/api/projects/${encodeURIComponent(pid)}/lessons`);
+    const ld = await lr.json();
+    document.getElementById('d_lessons').value = (ld.ok && ld.content)
+      ? ld.content
+      : '（暂无情景记忆：跑过一次全流程 / 回归后，会自动从失败快照聚类生成历史易错点重点覆盖清单）';
+  } catch(e){ document.getElementById('d_lessons').value = '（读取情景记忆失败）'; }
+  // 拉取 LLM 可用性，决定是否展示「LLM 智能生成」开关
   try{
     const s=await fetch('/api/llm/status'); const sd=await s.json();
     window.__llmAvailable=!!(sd&&sd.available);
@@ -1507,7 +1517,7 @@ async function openDetail(pid){
   document.getElementById('detailMask').classList.add('show');
 }
 function switchTab(tab){
-  ['requirements','regression','cases'].forEach(t=>{
+  ['requirements','regression','cases','lessons'].forEach(t=>{
     document.getElementById('d_'+t).style.display=t===tab?'block':'none';
     const b=document.querySelector(`.btn.tab[data-tab="${t}"]`);
     if(b)b.classList.toggle('active',t===tab);
@@ -1536,9 +1546,9 @@ async function generateCases(){
     }
     document.getElementById('d_cases').value=d.markdown||'';
     let tip='';
-    if(d.llm_used) tip='（已用 Gemini 智能生成）';
+    if(d.llm_used) tip='（已用 LLM 智能生成）';
     else if(d.llm_available) tip='（本次走规则版）';
-    else tip='（规则版：配置 GOOGLE_API_KEY 后可切换更智能的生成）';
+    else tip='（规则版：配置 LLM_API_KEY 后可切换更智能的生成）';
     err.style.color='var(--ok,#10b981)';
     err.textContent=`已生成：${d.requirements} 条需求 → ${d.cases} 条用例 ${tip}`;
     err.style.display='block';

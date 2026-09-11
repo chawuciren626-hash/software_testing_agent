@@ -219,6 +219,17 @@ def api_llm_status() -> Any:
     return jsonify({"ok": True, "available": _llm_available()})
 
 
+@app.get("/api/projects/<pid>/lessons")
+def api_project_lessons(pid: str) -> Any:
+    """读取项目的情景记忆（P2 自动生成的历史失败根因 / 重点覆盖清单）。"""
+    pdir = pm.PROJECTS_DIR / pid
+    if not (pdir / "project.yaml").is_file():
+        return jsonify({"ok": False, "error": f"项目 {pid} 不存在"}), 404
+    lp = pdir / "lessons.md"
+    content = lp.read_text(encoding="utf-8") if lp.is_file() else ""
+    return jsonify({"ok": True, "has": bool(content), "content": content})
+
+
 @app.post("/api/projects/<pid>/cases")
 def api_project_cases(pid: str) -> Any:
     """按当前需求文本立即生成测试用例（无需跑全流程）。
