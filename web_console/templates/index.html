@@ -111,6 +111,9 @@ svg{display:block;}
 .task-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
 .task-bar select{border:1px solid var(--border);border-radius:9px;padding:8px 12px;font-size:13px;font-family:inherit;outline:none;background:var(--panel);transition:border-color .15s,box-shadow .15s;color:var(--text);}
 .task-bar select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+#taskCount{display:inline-flex;align-items:center;height:32px;padding:0 11px;border-radius:20px;background:var(--panel);border:1px solid var(--border);color:var(--muted);font-size:12px;font-weight:600;font-family:var(--mono);line-height:1;box-shadow:var(--shadow-sm);transition:color .15s,background .15s;}
+#taskCount::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--muted-2);margin-right:7px;}
+#taskCount:not(:empty):hover{color:var(--text);background:var(--bg);}
 .task-item{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:11px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;box-shadow:var(--shadow-sm);}
 .task-item:hover{border-color:#d6deea;}
 .task-item .t-main{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 320px;}
@@ -164,11 +167,14 @@ svg{display:block;}
 .trend-svg .xl{fill:var(--muted);font-size:9px;font-family:var(--mono);}
 .trend-svg .line{fill:none;stroke:var(--ok);stroke-width:2;stroke-linejoin:round;stroke-linecap:round;}
 .sel{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12.5px;font-family:inherit;}
-/* 分段切换：单项目 / 跨项目对比 */
-.seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
-.seg-btn{background:var(--bg);color:var(--muted);border:0;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;}
-.seg-btn+.seg-btn{border-left:1px solid var(--border);}
-.seg-btn.active{background:var(--accent,#4f46e5);color:#fff;}
+/* 分段切换：单项目 / 跨项目对比 / 任务视图切换 */
+.seg{display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:3px;gap:2px;}
+.seg-btn{display:inline-flex;align-items:center;gap:6px;background:transparent;color:var(--muted);border:0;border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:500;cursor:pointer;font-family:inherit;transition:background .15s ease,color .15s ease,box-shadow .15s ease,transform .1s ease;}
+.seg-btn .ico{width:14px;height:14px;}
+.seg-btn:hover{color:var(--text);background:rgba(99,102,241,.06);}
+.seg-btn:active{transform:scale(.97);}
+.seg-btn.active{background:var(--panel);color:var(--text);box-shadow:var(--shadow-sm);font-weight:600;}
+.seg-btn+.seg-btn{border-left:none;}
 /* 图例 */
 .legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;}
 .legend .lg{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
@@ -323,11 +329,14 @@ svg{display:block;}
 .ps-sel,.ps-num{border:1px solid var(--border);background:var(--panel);color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit;}
 .ps-num{width:66px;}
 /* 详情弹窗里的编辑区（需求/回归/用例/记忆/Web 场景）：统一成设计系统里的等宽文本域 */
-#d_requirements,#d_regression,#d_cases,#d_lessons,#d_webyaml,#d_knowledge{width:100%;box-sizing:border-box;
+#d_requirements,#d_regression,#d_cases,#d_lessons,#d_webyaml,#d_knowledge,#d_defects{width:100%;box-sizing:border-box;
   border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--panel);
   color:var(--text);font-family:var(--mono);font-size:12px;line-height:1.75;outline:none;
   resize:vertical;min-height:280px;max-height:46vh;transition:border-color .15s,box-shadow .15s;}
-#d_requirements:focus,#d_regression:focus,#d_webyaml:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+#d_requirements:focus,#d_regression:focus,#d_webyaml:focus,#d_defects:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft);}
+#d_requirements::-webkit-scrollbar,#d_regression::-webkit-scrollbar,#d_cases::-webkit-scrollbar,#d_lessons::-webkit-scrollbar,#d_webyaml::-webkit-scrollbar,#d_knowledge::-webkit-scrollbar,#d_defects::-webkit-scrollbar{width:8px;height:8px;}
+#d_requirements::-webkit-scrollbar-thumb,#d_regression::-webkit-scrollbar-thumb,#d_cases::-webkit-scrollbar-thumb,#d_lessons::-webkit-scrollbar-thumb,#d_webyaml::-webkit-scrollbar-thumb,#d_knowledge::-webkit-scrollbar-thumb,#d_defects::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+#d_requirements::-webkit-scrollbar-track,#d_regression::-webkit-scrollbar-track,#d_cases::-webkit-scrollbar-track,#d_lessons::-webkit-scrollbar-track,#d_webyaml::-webkit-scrollbar-track,#d_knowledge::-webkit-scrollbar-track,#d_defects::-webkit-scrollbar-track{background:transparent;}
 #d_webyaml{min-height:190px;max-height:30vh;margin-top:12px;}
 /* ---------- Web UI 冒烟面板（⑤） ---------- */
 .web-sec{margin-bottom:12px;}
@@ -434,11 +443,17 @@ svg{display:block;}
           <option value="failed">失败</option>
         </select>
         <div class="spacer"></div>
-        <div class="seg" id="taskGroupSeg">
-          <button class="sbtn" id="tgFlat" onclick="setTaskGroup('flat')">平铺</button>
-          <button class="sbtn" id="tgProj" onclick="setTaskGroup('project')">按项目</button>
+        <div class="seg view-toggle" id="taskGroupSeg">
+          <button class="seg-btn" id="tgFlat" onclick="setTaskGroup('flat')" title="平铺查看所有任务">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+            <span>平铺</span>
+          </button>
+          <button class="seg-btn" id="tgProj" onclick="setTaskGroup('project')" title="按项目分组查看">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg>
+            <span>按项目</span>
+          </button>
         </div>
-        <span class="hint" id="taskCount"></span>
+        <span class="hint count-pill" id="taskCount"></span>
       </div>
       <div id="taskList"></div>
       <div class="empty" id="taskEmpty" style="display:none">还没有执行任务。在项目卡片上点「跑全流程」或「跑核心回归」开始</div>
