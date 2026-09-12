@@ -72,7 +72,7 @@ jobs:
             tests/test_provenance.py \
             tests/test_skill_registry.py \
             tests/eval \
-            -q --tb=line 2>&1 | tee pytest-unit.log
+            -q --tb=short 2>&1 | tee pytest-unit.log
 
       - name: 失败摘要写入注解（便于未登录时定位失败用例）
         # 为什么需要这一步：GitHub 现在连公开仓库的 Actions 日志页都要求登录，
@@ -83,15 +83,20 @@ jobs:
         run: |
           if [ -s pytest-unit.log ]; then
             {
-              echo "== 失败用例摘要（最多 10 条） =="
-              grep -E "^(FAILED|ERROR) " pytest-unit.log | head -n 10 || true
-            } > .ci_fail_summary.txt
+              grep -E "^(FAILED|ERROR) " pytest-unit.log | head -n 5 || true
+              # `--tb=short` 下断言细节在 `E ` 开头的行里，且 AssertionError 的后续行也带 E 前缀。
+              # 只看 FAILED 行只有首行，会丢掉"哪些页面/哪条断言不过"这类关键信息。
+              grep -E "^E " pytest-unit.log | head -n 10 || true
+            } | head -n 12 > .ci_fail_summary.txt
             if [ -s .ci_fail_summary.txt ]; then
+              n=0
               while IFS= read -r line; do
+                n=$((n + 1))
+                [ "$n" -gt 10 ] && break
                 echo "::error::$line"
               done < .ci_fail_summary.txt
             else
-              echo "::error::pytest 未输出 FAILED/ERROR 行，请查看完整日志（可能为收集期错误）"
+              echo "::error::pytest 未输出 FAILED/ERROR/E 行，请查看完整日志（可能是收集期错误）"
             fi
           else
             echo "::error::未生成 pytest-unit.log，pytest 可能未启动"
