@@ -66,6 +66,7 @@ jobs:
             tests/test_trend_diff.py \
             tests/test_knowledge.py \
             tests/test_defects.py \
+            tests/test_provenance.py \
             tests/eval \
             -q
 

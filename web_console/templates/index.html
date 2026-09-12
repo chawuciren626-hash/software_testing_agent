@@ -1875,6 +1875,8 @@ async function openDetail(pid){
   document.getElementById('d_defects').value=d.files.defects||'（尚未生成缺陷草稿：跑一次「全流程」或「核心回归」后自动生成。\n注意：环境问题与配置问题不会被当成缺陷。）';
   document.getElementById('d_webyaml').value=d.files.web||'（暂无 web.yaml：可点「保存需求与配置」创建空文件，或按 extensions/web_testing/run_web.py 文件头的示例手写场景）';
   window.__runMeta=d.run_meta||null;   // 上次运行的生成方式（模式/是否注入易错点），供「已生成用例」页提示
+  // 生成溯源：用例文件自己带的来源标记（从 cases.md 回读，不是 run_meta 推导的）
+  window.__provenance=d.provenance||null;
   // 拉取情景记忆（P2 历史失败根因 / 重点覆盖清单）
   try {
     const lr = await fetch(`/api/projects/${encodeURIComponent(pid)}/lessons`);
@@ -2027,8 +2029,15 @@ function switchTab(tab){
         : '可直接编辑保存；保存后下一次执行即生效。'));
   const rm=window.__runMeta;
   if(tab==='cases'&&rm&&rm.mode){
+    const pv=window.__provenance;
     const extra=(rm.lessons_injected?' · 注入历史易错点':'')+(rm.cases?` · ${rm.cases} 条用例`:'');
     hint+=`  ｜ 上次运行：${rm.mode}${extra}（${rm.ts||''}）`;
+    // 降级要出声：用例看着生成好了，其实是模板占位，静默过去就会被当成 LLM 质量直接拿去用
+    if(pv&&pv.degraded){
+      hint+=`  ｜ ⚠️ 降级产出：${pv.degrade_reason||'原因未记录'} —— 步骤/预期为模板占位，需人工细化`;
+    } else if(pv&&pv.confidence){
+      hint+=`  ｜ 可信度：${pv.confidence}`;
+    }
   }
   document.getElementById('d_hint').textContent=hint;
 }
@@ -2177,6 +2186,7 @@ async function generateCases(){
       err.textContent='生成失败：'+(d.error||'未知错误'); err.style.display='block'; return;
     }
     document.getElementById('d_cases').value=d.markdown||'';
+    window.__provenance=d.provenance||null;   // 溯源随产物刷新，降级要立刻可见
     // 生成即打分（与 CLI run 同源）：立刻刷新质量面板，
     // 否则用户看到的还是上一次 run 的分数，趋势也会在这里断档。
     fetch(`/api/projects/${encodeURIComponent(detailPid)}/quality`).then(r=>r.json())
@@ -2188,7 +2198,13 @@ async function generateCases(){
     else if(d.llm_available) tip='（本次走规则版）';
     else tip='（规则版：配置 LLM_API_KEY 后可切换更智能的生成）';
     if(d.lessons_injected) tip+=' · 已注入历史易错点';
-    err.style.color='var(--ok,#10b981)';
+    if(d.knowledge_injected) tip+=' · 已注入项目知识';
+    if(d.degraded){
+      // 降级不是错误，但绝不能显示成"生成成功"了事 —— 这批用例是模板占位
+      err.style.color='var(--warn,#f59e0b)';
+      tip+=' ⚠️ LLM 未生效，已降级为规则版（步骤/预期为模板占位，需人工细化）';
+    }
+    err.style.color=d.degraded?'var(--warn,#f59e0b)':'var(--ok,#10b981)';
     err.textContent=`已生成：${d.requirements} 条需求 → ${d.cases} 条用例 ${tip}`;
     err.style.display='block';
     setTimeout(()=>{err.style.display='none';err.style.color='';},4000);

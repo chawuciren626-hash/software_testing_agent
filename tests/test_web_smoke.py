@@ -181,9 +181,10 @@ def test_cases_endpoint_injects_lessons(monkeypatch, tmp_path):
 
     def fake_gen(text, **k):
         captured["extra"] = k.get("extra_context")
-        return _FULL_TABLE
+        # 控制台走 generate_with_meta（要拿溯源信息），桩的返回值跟着变
+        return _FULL_TABLE, gc.provenance.build(mode=gc.provenance.MODE_RULE)
 
-    monkeypatch.setattr(gc, "generate_from_text", fake_gen)
+    monkeypatch.setattr(gc, "generate_with_meta", fake_gen)
     r = client.post("/api/projects/demo/cases", json={"requirements": "1. 用户可登录"})
     assert r.status_code == 200
     d = r.get_json()
@@ -904,3 +905,58 @@ def test_index_has_knowledge_tab_and_hooks():
     assert "renderKnowledgeInfo" in html
     # 跑全流程前的落盘必须带上 knowledge，否则"改了没效果"
     assert "d_knowledge').value" in html
+
+
+# ---------------------------------------------------------------------------
+# 生成溯源（provenance）：来源与降级必须能在控制台看到
+# ---------------------------------------------------------------------------
+def test_files_api_exposes_provenance(monkeypatch, tmp_path):
+    """用例文件自带的来源标记要能被界面读到（从产物回读，不是 run_meta 推导）。"""
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    (proj / "artifacts").mkdir()
+    (proj / "requirements.md").write_text("1. 用户可登录\n", encoding="utf-8")
+    r = client.post("/api/projects/demo/cases", json={})
+    assert r.get_json()["ok"] is True
+
+    d = client.get("/api/projects/demo/files").get_json()
+    pv = d.get("provenance")
+    assert pv is not None, "生成过用例就应有溯源标记"
+    assert pv["mode"] == "rule"
+    assert pv["degraded"] is False
+    assert pv["source"].endswith("requirements.md")
+
+
+def test_cases_endpoint_marks_degraded_when_llm_fails(monkeypatch, tmp_path):
+    """LLM 失败降级必须回传 degraded —— 界面上不能显示成"生成成功"就完事。"""
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    (proj / "requirements.md").write_text("1. 用户可登录\n", encoding="utf-8")
+    monkeypatch.setattr(gc, "llm_generate",
+                        lambda *a, **k: (_ for _ in ()).throw(gc.LLMError("403 余额不足")))
+    r = client.post("/api/projects/demo/cases", json={"llm": True})
+    d = r.get_json()
+    assert d["ok"] is True
+    assert d["degraded"] is True, "降级必须显式回传，否则前端无从提醒"
+    assert "余额不足" in (d["provenance"] or {}).get("degrade_reason", "")
+    # 产物里也要看得见：用例文件常被单独拷走评审
+    assert "⚠️ 降级产出" in (proj / "artifacts" / "cases.md").read_text(encoding="utf-8")
+
+
+def test_cases_endpoint_injects_knowledge_like_cli(monkeypatch, tmp_path):
+    """控制台与 CLI 必须同源同量：CLI 注入项目知识、控制台不注入 = 两套口径。"""
+    proj = _mk_tmp_project(tmp_path)
+    monkeypatch.setattr(web_app.pm, "PROJECTS_DIR", tmp_path)
+    (proj / "knowledge.md").write_text(_KNOWLEDGE_MD, encoding="utf-8")
+    (proj / "requirements.md").write_text("管理员可以使用密码登录系统", encoding="utf-8")
+    d = client.post("/api/projects/demo/cases", json={}).get_json()
+    assert d["ok"] is True
+    assert d["knowledge_injected"] is True
+    assert d["provenance"]["injected"]["knowledge"] >= 1
+
+
+def test_index_wires_provenance():
+    """界面必须接上溯源：降级提示要在「已生成用例」页看得到。"""
+    html = client.get("/").get_data(as_text=True)
+    assert "__provenance" in html
+    assert "降级产出" in html

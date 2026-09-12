@@ -212,6 +212,23 @@ def _read_web(pdir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _read_provenance(pdir: Path) -> Optional[Dict[str, Any]]:
+    """从 cases.md **回读**生成溯源（来源只有一个：产物文件本身）。
+
+    不从 run_meta 读：run_meta 是流水线视角，而用例文件会被单独拷走，
+    标记跟着文件走才不会"人走了、来源留不下"。
+    """
+    f = pdir / "artifacts" / "cases.md"
+    if not f.is_file():
+        return None
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import provenance as pv  # noqa: E402
+        return pv.parse(f.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 @app.get("/api/projects")
 def api_projects() -> Any:
     # 停用的项目默认不展示（也不参与看板/门禁）；?include_disabled=1 时一并列出，
@@ -277,7 +294,8 @@ def api_project_files(pid: str) -> Any:
                     "perf_security": perf_sec, "web": _read_web(pdir),
                     "quality": pm._read_quality(pdir),
                     "defects": pm._read_defects(pdir),
-                    "diff": pm._read_diff(pdir)})
+                    "diff": pm._read_diff(pdir),
+                    "provenance": _read_provenance(pdir)})
 
 
 def _llm_available() -> bool:
@@ -413,21 +431,45 @@ def api_project_cases(pid: str) -> Any:
     if not req_file.is_file():
         return jsonify({"ok": False, "error": "尚无 requirements.md，请先填写需求"}), 400
 
-    # 情景记忆：注入项目历史易错点（若已生成 lessons.md）
+    # 两类记忆注入，与 CLI `run` **同源同量**：
+    # 控制台只注入 lessons、CLI 还注入 knowledge 是不行的 ——
+    # 同一次需求在两处生成出不同质量的用例，是最难排查的那种"说不清"。
+    _text = ""
+    try:
+        _text = req_file.read_text(encoding="utf-8")
+    except Exception:
+        _text = ""
     extra_context = None
+    injected: Dict[str, int] = {"lessons": 0, "knowledge": 0}
     try:
         sys.path.insert(0, str(ROOT / "extensions" / "memory"))
         import lessons as ls  # noqa: E402
         extra_context = ls.to_inject_prompt(pdir)
+        if extra_context:
+            _lmd = ls.load_lessons(pdir) or ""
+            injected["lessons"] = sum(
+                1 for _l in _lmd.splitlines()
+                if _l.strip()[:1].isdigit() and ". " in _l)
     except Exception:
         extra_context = None
+    try:
+        import knowledge as kn  # noqa: E402
+        kinj = kn.to_inject_prompt(pdir, _text)
+        if kinj:
+            injected["knowledge"] = len(kn.explain(pdir, _text)["picked"])
+            extra_context = ((extra_context or "") + "\n\n" + kinj).strip() if extra_context else kinj
+    except Exception:
+        pass
 
+    prov: Optional[Dict[str, Any]] = None
     try:
         sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
         import generate_cases as gc  # noqa: E402
         text = req_file.read_text(encoding="utf-8")
-        md = gc.generate_from_text(text, use_llm=use_llm, agentic=use_agentic,
-                                   source=str(req_file), extra_context=extra_context)
+        md, prov = gc.generate_with_meta(text, use_llm=use_llm, agentic=use_agentic,
+                                         source=str(req_file),
+                                         extra_context=extra_context,
+                                         injected=injected)
         items = gc.parse_requirements(text)
         out = pdir / "artifacts" / "cases.md"
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -449,7 +491,10 @@ def api_project_cases(pid: str) -> Any:
         print(f"[质量分] 计算失败（不影响生成）：{e}")
     try:
         pm._merge_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
-                           lessons_injected=bool(extra_context),
+                           lessons_injected=bool(injected.get("lessons")),
+                           knowledge_injected=bool(injected.get("knowledge")),
+                           degraded=bool((prov or {}).get("degraded")),
+                           provenance=prov,
                            requirements=len(items), cases=len(case_rows),
                            **({"quality": quality["total"]}
                               if quality and quality.get("total") is not None else {}))
@@ -464,7 +509,10 @@ def api_project_cases(pid: str) -> Any:
         "llm_used": use_llm and _llm_available(),
         "llm_available": _llm_available(),
         "agentic_used": use_agentic and _llm_available(),
-        "lessons_injected": bool(extra_context),
+        "lessons_injected": bool(injected.get("lessons")),
+        "knowledge_injected": bool(injected.get("knowledge")),
+        "degraded": bool((prov or {}).get("degraded")),
+        "provenance": prov,
         "quality": quality,
     })
 

@@ -154,7 +154,12 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 
 ### Phase 1 — 智能层接入（有 key 后，约 3 周）
 - [ ] S1 把 `src/agentic_explorer` Supervisor 编排接为 `run` 的可选阶段（gated by key）。
-- [ ] 需求→用例 默认走 LLM（规则版作降级）；生成物带来源/置信度标记。
+- [ ] 需求→用例 默认走 LLM（规则版作降级）。
+- [x] **生成物带来源/置信度标记** → 已落地（2026-09-12）：`extensions/requirements_to_cases/provenance.py`
+      标记**写在 `cases.md` 里**（不只是 run_meta）—— 用例文件常被单独拷走评审，来源必须跟着文件走。
+      核心价值：**「没配 key 走规则版」与「LLM 失败降级成规则版」在产物上可区分**，
+      后者会在 CLI / 报告 / 控制台三处出声（写明清退原因），不再是静默降级。
+      可信度不编百分比：定性档位（低/中/中高/低（降级））+ 定量引用实测结构质量分。
 - [ ] ~~S2 长期记忆~~ → 已落地（2026-09-11）：`extensions/memory/knowledge.py` —— 项目知识库
       `projects/<id>/knowledge.md`（**人工维护**，与自动生成的 lessons.md 互补：
       lessons 回答"哪些场景容易红"，knowledge 回答"这个项目的取值约定是什么"）。

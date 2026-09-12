@@ -37,6 +37,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -383,7 +384,8 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 def _step_requirements(pid: str, pdir: Path, use_llm: bool = False,
                        agentic: bool = False,
-                       extra_context: Optional[str] = None) -> Optional[Path]:
+                       extra_context: Optional[str] = None,
+                       injected: Optional[Dict] = None) -> Optional[Path]:
     req_file = pdir / "requirements.md"
     out = pdir / "artifacts" / "cases.md"
     if not req_file.is_file():
@@ -391,14 +393,23 @@ def _step_requirements(pid: str, pdir: Path, use_llm: bool = False,
         return None
     sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
     import generate_cases as gc  # noqa: E402
+    import provenance as pv  # noqa: E402
 
     text = req_file.read_text(encoding="utf-8")
-    md = gc.generate_from_text(text, use_llm=use_llm, agentic=agentic,
-                               source=str(req_file), extra_context=extra_context)
+    # 用 generate_with_meta：产物里要盖上「怎么生成的」标记，
+    # 尤其是 **LLM 失败降级** 必须在文件里看得见 —— 否则它长得跟"没配 key 走规则版"一模一样。
+    md, meta = gc.generate_with_meta(text, use_llm=use_llm, agentic=agentic,
+                                     source=str(req_file), extra_context=extra_context,
+                                     injected=injected)
     out.write_text(md, encoding="utf-8")
     _, rows = _parse_cases(md)
     mode = "智能体多步编排" if (use_llm and agentic) else ("LLM 增强" if use_llm else "规则版")
     print(f"  [需求->用例] {mode}：{len(rows)} 条用例 -> {out}")
+    if meta.get("degraded"):
+        # 降级不是错误（流水线照常产出），但**必须出声**：
+        # 静默降级 = 让人以为拿到了 LLM 质量的用例，实际拿到的是模板占位。
+        print(f"  [需求->用例] ⚠️ 本次为降级产出（{meta.get('degrade_reason') or '原因未记录'}），"
+              f"步骤/预期为模板占位，需人工细化")
     return out
 
 
@@ -543,6 +554,17 @@ def _step_quality(pdir: Path, cases_md: Optional[str],
     cq.record_quality(pdir, result, mode=mode)   # 一步到位：追加历史 + 写 quality.json
 
     total = result.get("total")
+
+    # 把结构质量分回写到 cases.md 的溯源标记里：用例文件常被单独发出去评审，
+    # 分数只躺在 quality.json 里，拿到文件的人就看不到"这批用例形式完整度如何"。
+    try:
+        import provenance as pv  # noqa: E402
+        _cf = Path(pdir) / "artifacts" / "cases.md"
+        if _cf.is_file():
+            _cf.write_text(pv.attach_quality(_cf.read_text(encoding="utf-8"), total),
+                           encoding="utf-8")
+    except Exception as e:      # 回写失败不能让打分失败
+        print(f"  [质量分] 回写溯源标记失败（不影响打分）：{e}")
     d = cq.delta(cq.read_history(pdir))
     if total is None:
         print("  [质量分] 无法计分（用例为空或缺少可判定维度），已跳过")
@@ -1286,13 +1308,26 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
     _rmeta = _read_run_meta(pdir)
     gen_item = ""
     if _rmeta:
-        _parts = [_h(_rmeta.get("mode", ""))]
+        _pv = _rmeta.get("provenance") or {}
+        _parts = [_h(str(_rmeta.get("mode", "")))]
         if _rmeta.get("lessons_injected"):
             _parts.append("注入历史易错点")
         if _rmeta.get("cases"):
             _parts.append(f"{_rmeta.get('cases')} 条用例")
+        # 降级必须显式标红：这批用例看着"生成好了"，其实是模板占位，
+        # 不标出来就会被当成 LLM 质量的产物直接拿去评审/执行。
+        _degraded = bool(_pv.get("degraded") or _rmeta.get("degraded"))
+        _style = "font-size:14px;font-weight:700"
+        _tip = ""
+        if _degraded:
+            _reason = _h(str(_pv.get("degrade_reason") or "原因未记录")).replace("'", "&#39;")
+            _parts.append("⚠️ 降级产出")
+            _style += ";color:var(--bad)"
+            _tip = f" title='本次 LLM 未生效、已退回规则版：{_reason}'"
+        elif _pv.get("confidence"):
+            _parts.append(f"可信度 {_h(str(_pv['confidence']))}")
         gen_item = ("<div class='summary-item'><span class='k'>生成模式</span>"
-                    f"<span class='v' style='font-size:14px;font-weight:700'>"
+                    f"<span class='v' style='{_style}'{_tip}>"
                     f"{' · '.join(_parts)}</span></div>")
 
     # 性能与安全冒烟（执行过才有；门禁独立于核心回归，各自给结论）
@@ -1551,8 +1586,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     except Exception:
         _req_text = ""
     kinject = kn.to_inject_prompt(pdir, _req_text)
+    kpicked = kn.explain(pdir, _req_text)["picked"] if kinject else []
     if kinject:
-        kpicked = kn.explain(pdir, _req_text)["picked"]
         k_titles = "、".join(p["title"] or "(无标题)" for p in kpicked)
         print(f"  [长期记忆] 从项目知识库拾取 {len(kpicked)} 段注入：{k_titles}")
         inject = ((inject or "") + "\n\n" + kinject).strip() if inject else kinject
@@ -1566,10 +1601,22 @@ def cmd_run(args: argparse.Namespace) -> None:
     elif kinject:
         print(f"  [长期记忆] 已注入与本次需求相关的项目知识（{len(inject)} 字符）")
 
+    # 注入量（条/段）要记进溯源标记：只知道"注入了"不够，
+    # 下次看到"注入 0 段"才能判断是知识库没内容，还是检索没命中。
+    _lcount = 0
+    if ls_injected:
+        try:
+            _lmd = ls.load_lessons(pdir) or ""
+            _lcount = len([_l for _l in _lmd.splitlines()
+                           if re.match(r"^\d+\.\s", _l.strip())])
+        except Exception:
+            _lcount = 0
+
     use_llm = bool(getattr(args, "llm", False))
     use_agentic = bool(getattr(args, "agentic", False))
     cases = _step_requirements(args.id, pdir, use_llm=use_llm,
-                              agentic=use_agentic, extra_context=inject)
+                              agentic=use_agentic, extra_context=inject,
+                              injected={"lessons": _lcount, "knowledge": len(kpicked)})
     # 记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数
     _mode = "智能体多步自审编排" if (use_llm and use_agentic) else ("LLM 增强" if use_llm else "规则版")
     _case_count = 0
@@ -1588,14 +1635,28 @@ def cmd_run(args: argparse.Namespace) -> None:
             _req_count = len(_gc.parse_requirements(_rf.read_text(encoding="utf-8")))
     except Exception:
         _req_count = 0
+    # 溯源信息**从产物回读**，不拿参数重新推一遍 ——
+    # 两处各推一次迟早漂移（比如降级只发生在一处），而 cases.md 里的标记就是事实。
+    _pv = None
+    if cases and Path(cases).is_file():
+        try:
+            sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+            import provenance as _pvmod  # noqa: E402
+            _pv = _pvmod.parse(Path(cases).read_text(encoding="utf-8"))
+        except Exception:
+            _pv = None
+    _degraded = bool((_pv or {}).get("degraded"))
+
     _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
                     lessons_injected=bool(ls_injected),
                     knowledge_injected=bool(kinject),
-                    requirements=_req_count, cases=_case_count)
+                    requirements=_req_count, cases=_case_count,
+                    degraded=_degraded, provenance=_pv)
     _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
                         lessons_injected=bool(ls_injected),
                         knowledge_injected=bool(kinject),
-                        requirements=_req_count, cases=_case_count)
+                        requirements=_req_count, cases=_case_count,
+                        degraded=_degraded, provenance=_pv)
 
     # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），
     # 落盘后供报告/看板/控制台读。默认**只展示与看趋势、不做门禁**；

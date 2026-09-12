@@ -24,9 +24,11 @@ import os
 import re
 import sys
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests  # Gemini REST 调用零额外依赖
+
+import provenance  # 生成溯源：与 generate_cases 同目录，调用方已把该目录放进 sys.path
 
 
 def parse_requirements(text: str) -> List[str]:
@@ -76,12 +78,22 @@ def gen_cases(items: List[str]) -> List[Dict]:
     return out
 
 
-def to_markdown(cases: List[Dict], source: str) -> str:
-    lines = [
-        f"# 测试用例（由需求生成）",
-        f"- 来源：{source}",
-        f"- 生成时间：{datetime.datetime.now():%Y-%m-%d %H:%M}",
-        f"- 用例数：{len(cases)}",
+def to_markdown(cases: List[Dict], source: str, meta: Optional[Dict] = None) -> str:
+    """渲染用例表。
+
+    ``meta`` 为溯源信息时，头部交给 ``provenance.render_header`` 渲染（含生成方式/
+    可信度/降级）；不传时退回原来的三行头部，保证老调用方行为不变。
+    """
+    if meta is not None:
+        head = provenance.render_header(meta)
+    else:
+        head = [
+            f"# 测试用例（由需求生成）",
+            f"- 来源：{source}",
+            f"- 生成时间：{datetime.datetime.now():%Y-%m-%d %H:%M}",
+            f"- 用例数：{len(cases)}",
+        ]
+    lines = list(head) + [
         "",
         "| id | 标题 | 模块 | 类型 | 优先级 | 前置 | 步骤 | 预期 | 可自动化 |",
         "|---|---|---|---|---|---|---|---|---|",
@@ -414,6 +426,101 @@ def agentic_generate(text: str, provider: Optional[str] = None,
     return _extract_table(final)
 
 
+def _active_model(provider: Optional[str] = None,
+                  model: Optional[str] = None) -> Tuple[str, str]:
+    """本次实际使用的 (provider, model)。溯源要记录**真实值**，不是默认值。"""
+    prov = (provider or os.environ.get("LLM_PROVIDER") or "openai").strip().lower()
+    if model:
+        return prov, model
+    if prov == "gemini":
+        return prov, (os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL)
+    return prov, (os.environ.get("LLM_MODEL") or DEFAULT_OPENAI_MODEL)
+
+
+def _count_rows(md: str) -> int:
+    """数用例表格行数（不含表头与分隔行）。溯源里的用例数用它，避免为了计数去
+    反向依赖 project_manager 的解析器。"""
+    n = 0
+    for line in (md or "").splitlines():
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        if "---" in s:
+            continue
+        n += 1
+    return max(0, n - 1)     # 减去表头行
+
+
+def generate_with_meta(text: str, use_llm: bool = False,
+                       provider: Optional[str] = None,
+                       api_key: Optional[str] = None,
+                       base_url: Optional[str] = None,
+                       model: Optional[str] = None,
+                       source: str = "需求文本",
+                       extra_context: Optional[str] = None,
+                       agentic: bool = False,
+                       injected: Optional[Dict] = None) -> Tuple[str, Dict]:
+    """同 ``generate_from_text``，但额外返回溯源信息。
+
+    溯源为什么要在这里产生：只有这一步**知道**到底走了 LLM 还是退回了规则版、
+    用的是哪个模型、注入了哪些上下文。等产物写进文件之后，这些信息就只剩日志了。
+    """
+    prov, mdl = _active_model(provider, model)
+    degraded, reason = False, ""
+
+    if use_llm:
+        try:
+            prompt = text
+            if extra_context:
+                prompt = text + "\n\n# 历史易错点（重点覆盖）\n" + extra_context
+            if agentic:
+                md = agentic_generate(prompt, provider=provider, api_key=api_key,
+                                      base_url=base_url, model=model,
+                                      extra_context=extra_context)
+            else:
+                md = llm_generate(prompt, provider=provider, api_key=api_key,
+                                  base_url=base_url, model=model)
+            meta = provenance.build(
+                mode=provenance.mode_of(True, agentic),
+                provider=prov, model=mdl,
+                injected=injected, source=source,
+                case_count=_count_rows(md),
+                req_count=len(parse_requirements(text)),
+            )
+            return provenance.stamp(md, meta), meta
+        except LLMError as e:
+            print(f"  [需求->用例] LLM 增强失败，已自动降级为规则版：{e}")
+            degraded, reason = True, str(e)
+        except Exception as e:      # 非 LLMError 也要降级，但**记下真实类名**便于排查
+            print(f"  [需求->用例] LLM 增强异常，已自动降级为规则版：{type(e).__name__}: {e}")
+            degraded, reason = True, f"{type(e).__name__}: {e}"
+
+    items = parse_requirements(text)  # 规则版只用原始需求，extra_context 不进解析
+    if not items:
+        meta = provenance.build(
+            mode=provenance.MODE_RULE, provider=prov if use_llm else "",
+            model=mdl if use_llm else "", degraded=degraded, degrade_reason=reason,
+            injected=injected, source=source, case_count=0, req_count=0,
+        )
+        return provenance.stamp(
+            "# 未解析到需求条目。请使用编号/项目符号列表书写需求。\n", meta), meta
+
+    meta = provenance.build(
+        mode=provenance.MODE_RULE, provider=prov if use_llm else "",
+        model=mdl if use_llm else "", degraded=degraded, degrade_reason=reason,
+        injected=injected, source=source, case_count=len(items) * 3,
+        req_count=len(items),
+    )
+    md = to_markdown(gen_cases(items), source, meta=meta)
+    if extra_context:
+        md += (
+            "\n\n## 历史易错点重点覆盖建议\n"
+            "> 以下为历史回归失败根因，建议补充覆盖（规则版无法自动推理，"
+            "需人工或 LLM 版增强）：\n\n" + extra_context + "\n"
+        )
+    return md, meta
+
+
 def generate_from_text(text: str, use_llm: bool = False,
                        provider: Optional[str] = None,
                        api_key: Optional[str] = None,
@@ -433,30 +540,15 @@ def generate_from_text(text: str, use_llm: bool = False,
     extra_context: 情景记忆注入（历史易错点重点覆盖清单）。LLM 版直接拼进 prompt 让其
     推理加强覆盖；规则版只在用例表格后追加建议段（规则版无法自动推理，需人工/LLM 版增强），
     不会污染需求解析（parse_requirements 跳过标题行）。无 extra_context 时行为与原来一致。
+
+    实现上**直接委托** ``generate_with_meta``：两条路径的降级判定与溯源标记必须同源，
+    各写一份迟早会漂移（比如一处记得标降级、另一处忘了）。
+    产物里会盖上来源/可信度标记，规则版与「LLM 失败降级」在文件里是可区分的。
     """
-    if use_llm:
-        try:
-            prompt = text
-            if extra_context:
-                prompt = text + "\n\n# 历史易错点（重点覆盖）\n" + extra_context
-            if agentic:
-                return agentic_generate(prompt, provider=provider, api_key=api_key,
-                                        base_url=base_url, model=model,
-                                        extra_context=extra_context)
-            return llm_generate(prompt, provider=provider, api_key=api_key,
-                                base_url=base_url, model=model)
-        except LLMError as e:
-            print(f"  [需求->用例] LLM 增强失败，已自动降级为规则版：{e}")
-    items = parse_requirements(text)  # 规则版只用原始需求，extra_context 不进解析
-    if not items:
-        return "# 未解析到需求条目。请使用编号/项目符号列表书写需求。\n"
-    md = to_markdown(gen_cases(items), source)
-    if extra_context:
-        md += (
-            "\n\n## 历史易错点重点覆盖建议\n"
-            "> 以下为历史回归失败根因，建议补充覆盖（规则版无法自动推理，"
-            "需人工或 LLM 版增强）：\n\n" + extra_context + "\n"
-        )
+    md, _meta = generate_with_meta(text, use_llm=use_llm, provider=provider,
+                                   api_key=api_key, base_url=base_url, model=model,
+                                   source=source, extra_context=extra_context,
+                                   agentic=agentic)
     return md
 
 
