@@ -254,6 +254,18 @@ def test_web_card_links_are_relative_to_artifacts_dir(tmp_path):
     assert "第4步 expect_text" in txt
 
 
+def test_base_name_handles_both_separators():
+    """证据路径可能来自另一平台：Windows 反斜杠与 POSIX 正斜杠都必须取到文件名。
+
+    回归守护：原先直接用 `Path(p).name` —— POSIX 下反斜杠只是普通字符，
+    会返回**整串路径**当文件名，报告里的证据链接随之 404（在本机 Windows 上完全看不出）。
+    """
+    assert pm._base_name(r"artifacts\web_shots\a.png") == "a.png"
+    assert pm._base_name("artifacts/web_shots/a.png") == "a.png"
+    assert pm._base_name(r"artifacts\web_repro_x.spec.ts") == "web_repro_x.spec.ts"
+    assert pm._base_name("web_repro_x.spec.ts") == "web_repro_x.spec.ts"
+
+
 def test_web_card_reports_config_issues_not_silently(tmp_path):
     """配置问题必须显式列出：静默跳过会让门禁悄悄变松。"""
     pdir = tmp_path / "proj"

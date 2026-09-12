@@ -889,6 +889,19 @@ def _perf_security_card_html(pf: Dict[str, Any]) -> str:
     )
 
 
+def _base_name(p: Any) -> str:
+    """取路径末段文件名，对 Windows 反斜杠与 POSIX 正斜杠两种分隔符都成立。
+
+    为什么不能直接用 `Path(p).name`：执行器（extensions/web_testing/run_web.py）在 Windows 上
+    产出的是反斜杠分隔的路径（artifacts + 反斜杠 + web_shots + 反斜杠 + 文件名），
+    而 POSIX 下反斜杠只是普通字符 —— 此时 `Path(...).name` 会把整串路径当成一个文件名，
+    证据链接随之被渲染成「web_shots/artifacts...」，在 Linux/CI 上必然 404。
+    报告产物可能在另一个平台生成、再被本机读取（本项目支持跨机看报告），
+    所以这里显式统一分隔符，而不依赖运行平台的路径语义。
+    """
+    return str(p).replace("\\", "/").rstrip("/").split("/")[-1]
+
+
 def _web_card_html(wf: Dict[str, Any]) -> str:
     """渲染「Web UI 冒烟」卡片（场景表 + 配置/门禁问题 + 失败证据）。"""
     ok_all = bool(wf.get("all_pass"))
@@ -918,12 +931,12 @@ def _web_card_html(wf: Dict[str, Any]) -> str:
                 # 而 report.html 本身也在 artifacts/ —— 所以只取文件名拼相对路径，
                 # 不能用执行器返回的项目级相对路径（那会拼成 artifacts/artifacts/...）。
                 links = "、".join(
-                    f"<a href='web_shots/{_h(Path(p).name)}'>截图{i + 1}</a>"
+                    f"<a href='web_shots/{_h(_base_name(p))}'>截图{i + 1}</a>"
                     for i, p in enumerate(shots)
                 )
                 extra.append(links)
             if s.get("repro"):
-                extra.append(f"<a href='{_h(Path(str(s['repro'])).name)}'>可复现脚本</a>")
+                extra.append(f"<a href='{_h(_base_name(s['repro']))}'>可复现脚本</a>")
             rows.append(
                 f"<tr class='{cls}'>"
                 f"<td class='name'>{_h(s.get('name'))}</td>"
