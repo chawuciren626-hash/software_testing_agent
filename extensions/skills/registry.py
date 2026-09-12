@@ -94,13 +94,18 @@ def build_catalog(skills_dir: Path = SKILLS_DIR) -> dict:
     """汇总所有技能的版本清单（不含市场元数据，那是 O1 待决策项）。
 
     path 存相对仓库根的路径，保证 skills_catalog.json 跨机可读、可提交。
+
+    ⚠️ 必须用 `as_posix()` 而不是 `str(Path(...))`：后者在 Windows 下会写出反斜杠
+    （`agent-skills\\api-test-design\\SKILL.md`），这份文件是要提交进仓库、给 Linux
+    （含 CI）读取的 —— 反斜杠在 POSIX 下只是普通字符，会导致提交物与另一平台上的
+    发现结果不一致，属于"本机看不出问题"的跨平台缺陷。
     """
     skills = discover_skills(skills_dir)
     skills_out = []
     for s in skills:
         d = s.to_dict()
         try:
-            d["path"] = str(Path(s.path).resolve().relative_to(ROOT.resolve()))
+            d["path"] = Path(s.path).resolve().relative_to(ROOT.resolve()).as_posix()
         except ValueError:
             pass  # 不在仓库内的技能保留原路径
         skills_out.append(d)
