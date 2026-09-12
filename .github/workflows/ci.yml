@@ -50,7 +50,10 @@ jobs:
       - name: 运行产品单测与评测基线
         # 注意：这里**不能**加 `|| true`。吞掉测试失败 = 门禁形同虚设，
         # 与项目「环境不可达不判绿 / 无断言不算绿」的防假绿原则直接冲突。
+        # `set -o pipefail` 保证 tee 之后退出码仍是 pytest 的（不是 tee 的）；
+        # 落盘 pytest-unit.log 供下一步把失败摘要写成注解（未登录也能看到失败用例）。
         run: |
+          set -o pipefail
           python -m pytest \
             tests/test_project_manager_units.py \
             tests/test_regression_gate.py \
@@ -69,7 +72,30 @@ jobs:
             tests/test_provenance.py \
             tests/test_skill_registry.py \
             tests/eval \
-            -q
+            -q --tb=line 2>&1 | tee pytest-unit.log
+
+      - name: 失败摘要写入注解（便于未登录时定位失败用例）
+        # 为什么需要这一步：GitHub 现在连公开仓库的 Actions 日志页都要求登录，
+        # REST 的 `actions/jobs/{id}/logs` 更需要管理员权限 —— 失败信息因此"隐形"。
+        # 注解（Annotations）是公开可读的，把失败的用例名与一行原因写进去，
+        # 排查时无需登录、也不必拉全量日志。注意：这一步不改变门禁结论（不吞错）。
+        if: failure()
+        run: |
+          if [ -s pytest-unit.log ]; then
+            {
+              echo "== 失败用例摘要（最多 10 条） =="
+              grep -E "^(FAILED|ERROR) " pytest-unit.log | head -n 10 || true
+            } > .ci_fail_summary.txt
+            if [ -s .ci_fail_summary.txt ]; then
+              while IFS= read -r line; do
+                echo "::error::$line"
+              done < .ci_fail_summary.txt
+            else
+              echo "::error::pytest 未输出 FAILED/ERROR 行，请查看完整日志（可能为收集期错误）"
+            fi
+          else
+            echo "::error::未生成 pytest-unit.log，pytest 可能未启动"
+          fi
 
       - name: 生成接口测试的 Allure 原始结果
         # 服务不可达时用例自动 skip，不污染结论；仅用于产出报告制品
@@ -79,8 +105,18 @@ jobs:
         run: npm install -g allure-commandline --silent
 
       - name: 生成 Allure HTML 报告
+        # 只在真有 Allure 原始结果、且 CLI 已装上时才生成。
+        # 上游 pytest 一旦失败，「生成接口测试的 Allure 原始结果」和「安装 Allure CLI」
+        # 都会因缺 `if: always()` 被跳过，此时再无条件跑 `allure generate`
+        # 只会再抛一个 exit 127（命令未找到），在"红"上叠一层与本问题无关的噪音，
+        # 反而把真正的失败点埋掉。这里改成显式判断 + 说明（未执行 ≢ 通过）。
         if: always()
-        run: allure generate allure-results -o allure-report --clean
+        run: |
+          if [ -d allure-results ] && [ -n "$(ls -A allure-results 2>/dev/null)" ] && command -v allure >/dev/null 2>&1; then
+            allure generate allure-results -o allure-report --clean
+          else
+            echo "::warning title=已跳过 Allure 报告::allure-results 为空或 Allure CLI 未安装（多为上游测试失败所致），本次不生成 HTML 报告。"
+          fi
 
       - name: 聚合 HTML 总览
         if: always()
