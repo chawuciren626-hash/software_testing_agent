@@ -41,7 +41,7 @@ needs_browser = pytest.mark.skipif(
     reason="本机没有可用的 Playwright Chromium（playwright install chromium）")
 
 
-# 页面 → 该页必须真实渲染出内容的锚点元素
+# 页面 → 该页必须真实渲染出内容的锚点元素（有数据时，列表行渲染在这里）
 PAGES = {
     "projects": "#projectGrid",
     "tasks": "#taskList",
@@ -51,6 +51,22 @@ PAGES = {
     "knowledge": "#kbList",
     "skills": "#skillList",
     "models": "#keyOpenai",
+}
+
+# 页面 →「无数据」时必须显式显示出来的空状态元素（与上面的锚点同级）。
+#
+# 为什么需要它：全新 checkout（比如 CI）里 projects/ 与 runs.db 都不存在，
+# 这些列表页本来就没有数据 —— 此时页面渲染的是「暂无项目…」这类空状态，
+# 内容**不在列表锚点里**。只查锚点内容，就会把"合法的空态"误判成"白屏"（假红）。
+#
+# 但这不等于放松：空状态元素在静态 HTML 里是 display:none，必须由页面脚本打开。
+# 一旦脚本崩溃，它不会显示、列表锚点也没有内容 → 真白屏照样会被抓到。
+EMPTY_STATES = {
+    "projects": "#projectEmpty",
+    "tasks": "#taskEmpty",
+    "reports": "#repEmpty",
+    "automation": "#autoEmpty",
+    "gates": "#gateEmpty",
 }
 
 
@@ -102,8 +118,21 @@ def _collect_problems(browser, url: str, pages: List[str]) -> List[str]:
             if page.locator(f"#page-{name}.active").count() == 0:
                 problems.append(f"{name}: 点击后页面未激活")
             anchor = page.locator(PAGES[name])
-            if anchor.count() == 0 or not anchor.inner_html().strip():
-                problems.append(f"{name}: 锚点 {PAGES[name]} 没有渲染出内容（白屏）")
+            if anchor.count() == 0:
+                problems.append(f"{name}: 锚点 {PAGES[name]} 不存在（页面没渲染）")
+            else:
+                has_rows = bool(anchor.first.inner_html().strip())
+                empty_sel = EMPTY_STATES.get(name)
+                # 空状态必须"被显式显示出来"才算数：静态 HTML 里它是 display:none，
+                # 只有页面脚本正常跑完才会打开 —— 所以这仍然能抓住白屏。
+                shows_empty = bool(
+                    empty_sel
+                    and page.locator(empty_sel).count() > 0
+                    and page.locator(empty_sel).first.is_visible()
+                )
+                if not (has_rows or shows_empty):
+                    problems.append(
+                        f"{name}: 锚点 {PAGES[name]} 既没有数据行、也没有显示空状态（疑似白屏）")
             if errors:
                 problems.append(f"{name}: " + " | ".join(errors[:3]))
     finally:
