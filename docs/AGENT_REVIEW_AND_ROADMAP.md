@@ -220,8 +220,8 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
 - [x] **O1 基础件：技能自动发现 + 版本目录** → 已落地（2026-09-12）：`extensions/skills/registry.py`
       扫描 `agent-skills/` 各 `SKILL.md` 前置元数据实现自动发现；每技能声明独立 `version: 0.1.0`；
       `build_catalog()` 汇总 `agent-skills/skills_catalog.json`（相对路径、可提交）；测试防漂移。
-      市场接入（自托管 vs 公共市场）与版本分发**待决策**，见 `docs/O1_SKILL_MARKET_AND_VERSIONING.md`。
-- [ ] O1 市场接入（B 块）：自托管仓库 / 公共市场 / 不接，及版本如何分发升级 —— **待用户拍板**（见决策文档第 5 节 4 问）。
+      市场接入（B 块）已拍板：**方案 1 纯本地，不接市场**，见 `docs/O1_SKILL_MARKET_AND_VERSIONING.md`（2026-09-12 闭环）。
+- [x] O1 市场接入（B 块）：2026-09-12 拍板为**方案 1 纯本地**（技能留仓库、git 版本化、`skills_catalog.json` 作清单，无外部依赖）；O1 整体完成。
 
 ---
 
