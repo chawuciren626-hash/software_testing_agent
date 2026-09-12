@@ -827,8 +827,12 @@ def _skills_root() -> Path:
 
 
 def _parse_skill_md(path: Path) -> Dict[str, Any]:
-    """解析 SKILL.md frontmatter 里的 name/description（宽松解析，容忍缺字段）。"""
-    name, desc = path.parent.name, ""
+    """解析 SKILL.md frontmatter 里的 name/description/version（宽松解析，容忍缺字段）。
+
+    version 由 O1 地基约定：每个技能在 SKILL.md 声明独立语义化版本（见
+    extensions/skills/registry.py 与 docs/O1_SKILL_MARKET_AND_VERSIONING.md）。
+    """
+    name, desc, version = path.parent.name, "", "—"
     try:
         text = path.read_text(encoding="utf-8")
         m = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
@@ -836,13 +840,16 @@ def _parse_skill_md(path: Path) -> Dict[str, Any]:
             fm = m.group(1)
             nm = re.search(r"^name:\s*(.+)$", fm, re.M)
             dm = re.search(r"^description:\s*(.+)$", fm, re.M | re.S)
+            vm = re.search(r"^version:\s*(.+)$", fm, re.M)
             if nm:
                 name = nm.group(1).strip().strip('"').strip("'")
             if dm:
                 desc = dm.group(1).strip().strip('"').strip("'").split("\n")[0][:120]
+            if vm:
+                version = vm.group(1).strip().strip('"').strip("'")
     except Exception:
         pass
-    return {"name": name, "description": desc}
+    return {"name": name, "description": desc, "version": version}
 
 
 @app.get("/api/skills")

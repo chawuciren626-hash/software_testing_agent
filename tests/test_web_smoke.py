@@ -960,3 +960,16 @@ def test_index_wires_provenance():
     html = client.get("/").get_data(as_text=True)
     assert "__provenance" in html
     assert "降级产出" in html
+
+
+def test_skills_api_exposes_version():
+    """控制台技能页要能看到版本（O1 地基：每个技能在 SKILL.md 声明 version）。"""
+    import re as _re
+    r = client.get("/api/skills")
+    assert r.status_code == 200
+    skills = r.get_json().get("skills", [])
+    assert skills, "/api/skills 应至少列出 agent-skills/ 下的技能"
+    for s in skills:
+        assert "version" in s, f"{s.get('dir')} 缺 version 字段"
+        assert _re.fullmatch(r"\d+\.\d+\.\d+", s.get("version") or ""), \
+            f"{s.get('dir')} version 不是 x.y.z：{s.get('version')!r}"

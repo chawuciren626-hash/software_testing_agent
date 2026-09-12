@@ -217,7 +217,11 @@ L3 智能质量     LLM-as-judge 对生成用例打分(覆盖度/可执行性/�
       `/api/auth/status`、`/static/`；会话存 token 的 `sha256` 指纹（换 token 旧会话自动失效）；
       token 不写前端、不写日志、启动信息不回显；`next` 只接受站内相对路径防开放重定向。
 - [x] O2 Web 自动化闭环：`extensions/web_testing/run_web.py`（声明式 YAML + Playwright + 三道防误判闸门）。未接 Playwright MCP。
-- [ ] O1 技能市场/版本管理。
+- [x] **O1 基础件：技能自动发现 + 版本目录** → 已落地（2026-09-12）：`extensions/skills/registry.py`
+      扫描 `agent-skills/` 各 `SKILL.md` 前置元数据实现自动发现；每技能声明独立 `version: 0.1.0`；
+      `build_catalog()` 汇总 `agent-skills/skills_catalog.json`（相对路径、可提交）；测试防漂移。
+      市场接入（自托管 vs 公共市场）与版本分发**待决策**，见 `docs/O1_SKILL_MARKET_AND_VERSIONING.md`。
+- [ ] O1 市场接入（B 块）：自托管仓库 / 公共市场 / 不接，及版本如何分发升级 —— **待用户拍板**（见决策文档第 5 节 4 问）。
 
 ---
 

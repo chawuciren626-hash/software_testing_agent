@@ -135,6 +135,31 @@ def test_nav_entries_match_registered_pages(console_url, browser_session):
 
 
 @needs_browser
+def test_skills_tab_shows_version_badge(console_url, browser_session):
+    """技能页必须把 O1 地基里的 version 渲染成徽标（v0.1.0），不能只显示名字。
+
+    变异验证：若前端没接上 .ver 徽标，此测试必红——它锚定"版本可见"这一行为。
+    注意：skills 是顶层导航页，要点 .nav-item[data-page=skills]（不是项目详情内的 switchTab）。
+    """
+    page = browser_session.new_page()
+    errors = []
+    page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    try:
+        page.goto(console_url, wait_until="networkidle")
+        page.locator('.nav-item[data-page="skills"]').first.click()
+        page.wait_for_timeout(1200)
+        rows = page.locator("#skillList .skill-row")
+        assert rows.count() > 0, "技能列表为空，版本徽标无从验证"
+        vers = page.locator("#skillList .skill-row .ver")
+        assert vers.count() > 0, "技能卡片缺少 .ver 版本徽标"
+        first_ver = vers.first.inner_text()
+        assert first_ver.startswith("v") and "." in first_ver, f"版本徽标格式异常：{first_ver!r}"
+        assert not errors, "技能页有 JS 报错：" + " | ".join(errors[:3])
+    finally:
+        page.close()
+
+
+@needs_browser
 def test_quality_tab_renders_without_js_errors(console_url, browser_session):
     """详情弹窗的「用例质量」页必须真的渲染出内容，且没有 JS 报错。
 
