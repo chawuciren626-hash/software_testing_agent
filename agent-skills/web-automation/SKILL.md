@@ -1,6 +1,8 @@
 ---
 name: web-automation
 description: Web 自动化测试方法论（Selenium / Playwright / PO 模式）。覆盖元素定位、等待策略、PageObject、稳定性与自愈、可视化校验。供探索智能体在 Web 探索与生成 Playwright 用例时调用。
+version: 0.1.0
+
 ---
 
 # Web 自动化技能

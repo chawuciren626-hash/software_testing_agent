@@ -67,6 +67,7 @@ jobs:
             tests/test_knowledge.py \
             tests/test_defects.py \
             tests/test_provenance.py \
+            tests/test_skill_registry.py \
             tests/eval \
             -q
 

@@ -1,6 +1,8 @@
 ---
 name: api-test-design
 description: API/接口自动化测试设计与执行方法论。覆盖 pytest+requests 工程结构、数据隔离(unique_suffix)、mall-admin 接口用例、断言与报告。供探索智能体在生成接口测试 mission 时调用。
+version: 0.1.0
+
 ---
 
 # API 测试设计技能

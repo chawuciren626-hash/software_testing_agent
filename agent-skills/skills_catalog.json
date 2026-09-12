@@ -1,0 +1,48 @@
+{
+  "generated_at": "2026-09-12 18:31",
+  "skill_count": 6,
+  "skills": [
+    {
+      "name": "api-test-design",
+      "description": "API/接口自动化测试设计与执行方法论。覆盖 pytest+requests 工程结构、数据隔离(unique_suffix)、mall-admin 接口用例、断言与报告。供探索智能体在生成接口测试 mission 时调用。",
+      "version": "0.1.0",
+      "dirname": "api-test-design",
+      "path": "agent-skills\\api-test-design\\SKILL.md"
+    },
+    {
+      "name": "ci-gate-design",
+      "description": "测试门禁（CI Gate）设计方法论。覆盖防假绿/防假红的三态判定、环境不可达与产品缺陷的分流、门禁摘要与通知、以及 GitHub Actions 落地的真实坑（workflow 存放位置、依赖最小化、未配置不静默判绿）。供探索智能体设计或审查测试流水线门禁时调用。",
+      "version": "0.1.0",
+      "dirname": "ci-gate-design",
+      "path": "agent-skills\\ci-gate-design\\SKILL.md"
+    },
+    {
+      "name": "qa-test-design",
+      "description": "QA 用例设计/测试点/测试计划生成技能（等价类、边界值、场景法、判定表；覆盖需求分析、用例评审、回归规划）。供探索智能体在需求→用例与测试点设计时使用。",
+      "version": "0.1.0",
+      "dirname": "qa-test-design",
+      "path": "agent-skills\\qa-test-design\\SKILL.md"
+    },
+    {
+      "name": "requirements-to-cases",
+      "description": "需求/PR → 结构化测试用例的方法论与生成流程。覆盖等价类划分、边界值、场景法、判定表，以及输出用例的字段规范。供探索智能体把需求转成 mission 或 pytest 用例时调用。",
+      "version": "0.1.0",
+      "dirname": "requirements-to-cases",
+      "path": "agent-skills\\requirements-to-cases\\SKILL.md"
+    },
+    {
+      "name": "software-testing",
+      "description": "软件测试全流程知识体系与文档生成。覆盖测试基础（术语/原则/质量模型）、用例设计（等价类/边界值/场景法/判定表）、缺陷管理、测试过程、专项测试（性能/安全/自动化）。供探索智能体在规划/执行测试时调用。",
+      "version": "0.1.0",
+      "dirname": "software-testing",
+      "path": "agent-skills\\software-testing\\SKILL.md"
+    },
+    {
+      "name": "web-automation",
+      "description": "Web 自动化测试方法论（Selenium / Playwright / PO 模式）。覆盖元素定位、等待策略、PageObject、稳定性与自愈、可视化校验。供探索智能体在 Web 探索与生成 Playwright 用例时调用。",
+      "version": "0.1.0",
+      "dirname": "web-automation",
+      "path": "agent-skills\\web-automation\\SKILL.md"
+    }
+  ]
+}

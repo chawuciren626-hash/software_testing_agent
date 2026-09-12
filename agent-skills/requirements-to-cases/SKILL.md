@@ -1,6 +1,8 @@
 ---
 name: requirements-to-cases
 description: 需求/PR → 结构化测试用例的方法论与生成流程。覆盖等价类划分、边界值、场景法、判定表，以及输出用例的字段规范。供探索智能体把需求转成 mission 或 pytest 用例时调用。
+version: 0.1.0
+
 ---
 
 # 需求分析 → 测试用例 技能

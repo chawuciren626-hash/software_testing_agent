@@ -1,6 +1,8 @@
 ---
 name: ci-gate-design
 description: 测试门禁（CI Gate）设计方法论。覆盖防假绿/防假红的三态判定、环境不可达与产品缺陷的分流、门禁摘要与通知、以及 GitHub Actions 落地的真实坑（workflow 存放位置、依赖最小化、未配置不静默判绿）。供探索智能体设计或审查测试流水线门禁时调用。
+version: 0.1.0
+
 ---
 
 # 测试门禁设计技能
