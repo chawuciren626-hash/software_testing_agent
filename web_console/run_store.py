@@ -159,6 +159,18 @@ def insert_snapshot(pid: str, summary: Dict[str, Any],
         _DB.commit()
 
 
+def count_snapshots(pid: str) -> int:
+    """某项目的快照条数。
+
+    用途：控制台侧写入前的**幂等去重**探针（见 `app._should_record_snapshot`）。
+    run / regression 的子进程自己会写一条快照，控制台靠"本次任务期间条数有没有增加"
+    来判断是否还需要兜底补写，避免同一任务留两份 → 失败计数与趋势点数被翻倍。
+    """
+    with _LOCK:
+        cur = _DB.execute("SELECT COUNT(*) FROM snapshots WHERE pid=?", (pid,))
+        return int(cur.fetchone()[0])
+
+
 def list_snapshots(pid: Optional[str] = None, limit: int = 60,
                    since: Optional[int] = None) -> List[Dict[str, Any]]:
     """按时间正序返回快照（画图需要正序）。

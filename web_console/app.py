@@ -97,6 +97,33 @@ def pm_script() -> str:
 TASKS: Dict[str, Dict[str, Any]] = {}
 _TASK_LOCK = threading.Lock()
 
+# 控制台会为其留档回归快照的任务类型（其余类型不写快照）。
+_SNAPSHOT_KINDS = ("run", "regression", "rerun")
+
+
+def _should_record_snapshot(kind: str, pid: str,
+                            snaps_before: Optional[int]) -> bool:
+    """控制台侧是否**还需要补写**一条快照（幂等去重，见 HARNESS_ARCHITECTURE_REVIEW.md §3.1）。
+
+    背景：`run` / `regression` 子进程（project_manager）结束时会**自己写一条**快照
+    （`project_manager.py:1796` / `:1837`）。此前控制台在子进程退出后又无条件写一条，
+    于是从控制台触发的 run / regression 每次在 snapshots 表里留**两份同内容记录** →
+    `lessons` 的"历史失败次数"约虚高 2×、趋势点数翻倍，而且**没有任何断言会变红**。
+
+    去重规则（保留两处写入，只让控制台这条变成"兜底"）：
+      - `run` / `regression`：子进程没写成（被 1800s 超时 kill / 提前崩溃）才补写一条。
+        判据 = 本次任务期间该项目的快照数**没有增加**（`now <= snaps_before`）。
+      - `rerun`：`cmd_rerun` 只把结果并回 `regression.json`、**不写快照**，控制台是唯一来源，
+        必须写（跳过它会让单场景重跑彻底不留档）。
+    """
+    if kind not in _SNAPSHOT_KINDS or not pid or pid == "*":
+        return False
+    if kind == "rerun":
+        return True                      # 子进程不写，控制台必须写
+    if snaps_before is None:
+        return True                      # 探针失败：宁可多写一条兜底，也不静默丢档
+    return run_store.count_snapshots(pid) <= snaps_before   # 子进程没写 → 兜底补一条
+
 
 def _spawn_task(kind: str, pid: str, args: List[str],
                 scene: Optional[str] = None,
@@ -126,6 +153,13 @@ def _spawn_task(kind: str, pid: str, args: List[str],
     def _run() -> None:
         proc: Optional[subprocess.Popen] = None
         timer: Optional[threading.Timer] = None
+        # 子进程启动前记录快照基数：run/regression 子进程自己会写一条快照，
+        # 结束后据此判断控制台是否还要兜底补写（幂等去重，见 _should_record_snapshot）。
+        snaps_before: Optional[int]
+        try:
+            snaps_before = run_store.count_snapshots(pid) if (pid and pid != "*") else 0
+        except Exception:      # 探针失败：退化为"总是补写"，宁可多一条也不静默丢档
+            snaps_before = None
         try:
             proc = subprocess.Popen(
                 [pm.python_exe(), pm_script(), *full_args],
@@ -160,9 +194,10 @@ def _spawn_task(kind: str, pid: str, args: List[str],
                                 task["exit_code"], task["log"],
                                 finished_ts=task["finished_ts"])
             # 回归类任务完成后留档一份结果快照，供「趋势」分析。
-            # 只在真正产生了 regression.json 时写（执行异常时文件可能是旧的，
-            # 但内容仍是本次落盘的最新结果，故以 status 为准，失败也留档以便看趋势断点）。
-            if kind in ("run", "regression", "rerun") and pid and pid != "*":
+            # ⚠️ 幂等：run/regression 的**子进程自己已经写过**一条，这里只在它没写成
+            # （被超时 kill / 提前崩溃）或 rerun（子进程本就不写）时兜底补一条，
+            # 否则同一任务会留两份 → lessons 失败计数与趋势点数翻倍（见 §3.1 缺陷修复）。
+            if _should_record_snapshot(kind, pid, snaps_before):
                 try:
                     reg = _read_regression(pm.PROJECTS_DIR / pid)
                     if reg:
