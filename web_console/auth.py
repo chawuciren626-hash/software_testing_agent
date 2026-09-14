@@ -36,6 +36,10 @@ from typing import Any, Optional
 
 from flask import Flask, jsonify, redirect, request, session, url_for
 
+# 只读状态由 guard 提供（单向依赖：auth → guard；guard 不反向 import auth，
+# 否则会循环导入。guard 的 _actor 直接读 session 键，不需要导入本模块）。
+from web_console import guard
+
 TOKEN_ENV = "STA_CONSOLE_TOKEN"
 
 # 这些值视为"没开鉴权"，方便用 off/false 显式关闭
@@ -177,5 +181,6 @@ def install(app: Flask) -> None:
 
     @app.get("/api/auth/status")
     def auth_status() -> Any:
-        """前端据此决定是否显示「退出登录」。需免鉴权，否则登录页拿不到状态。"""
-        return jsonify({"ok": True, "enabled": enabled(), "authed": _authed()})
+        """前端据此决定是否显示「退出登录」与只读横幅。需免鉴权，否则登录页拿不到状态。"""
+        return jsonify({"ok": True, "enabled": enabled(), "authed": _authed(),
+                        "readonly": guard.readonly()})

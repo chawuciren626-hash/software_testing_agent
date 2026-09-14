@@ -90,6 +90,12 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 import web_console.auth as console_auth  # noqa: E402
 console_auth.install(app)
 
+# L 层最小拦截（审阅报告 §4.3）：只读模式 + 审计。
+# **必须在 auth 之后**：before_request 按注册顺序执行，鉴权要先于只读判定，
+# 否则未登录的人会先撞上 403（只读）而不是 401（未登录）。
+import web_console.guard as guard  # noqa: E402
+guard.install(app, DATA_ROOT)
+
 
 def pm_script() -> str:
     """project_manager.py 的路径：打包后从资源目录取，否则用仓库里的源文件。"""
@@ -1167,7 +1173,17 @@ def api_models_save() -> Any:
     # 同步到当前进程环境，使后续调用立即生效
     for k, v in updates.items():
         os.environ[k] = v
-    return jsonify({"ok": True, "updated": list(updates.keys())})
+    # 明文凭据提示（§4.3③）：.env 里存的是**明文** key，写入后必须明确提醒，
+    # 并顺带报告它是否仍被 .gitignore 覆盖（覆盖失效 = 误提交风险）。
+    ignored = _is_git_ignored(env_path)
+    log.warning("[models] 已写入 %s（含明文凭据，勿提交；已被 .gitignore 忽略=%s）：%s",
+                env_path.name, ignored, ", ".join(updates.keys()))
+    return jsonify({
+        "ok": True,
+        "updated": list(updates.keys()),
+        "secret_note": "已写入 .env —— 该文件含**明文凭据**，请勿提交到版本库"
+                       f"（当前已被 .gitignore 忽略：{'是' if ignored else '否 ⚠️'}）。",
+    })
 
 
 # ----------------------------------------------------------------------------
@@ -1243,6 +1259,51 @@ def project_artifact_file(pid: str, name: str) -> Any:
     return send_file(f)
 
 
+def _is_git_ignored(path: Path) -> bool:
+    """判断某文件是否被 git 忽略（用于 .env 的误提交风险自检）。
+
+    优先问 git（`git check-ignore` 最准，能识别通配）；git 不可用/超时/非仓库时
+    退回读 `.gitignore` 做静态匹配。两者都判断不了就返回 False（宁可多提醒一次）。
+    """
+    try:
+        r = subprocess.run(["git", "check-ignore", "-q", str(path)],
+                           cwd=str(DATA_ROOT), timeout=5,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode in (0, 1):      # 0=被忽略，1=未被忽略
+            return r.returncode == 0
+    except Exception:  # 可忽略：git 缺失/超时/非仓库 → 退回静态检查，不是错误
+        pass
+    try:
+        gi = (DATA_ROOT / ".gitignore").read_text(encoding="utf-8")
+        pats = {ln.strip() for ln in gi.splitlines()}
+        return bool(pats & {".env", "/.env", "*.env", ".env.*"})
+    except Exception:  # 可忽略：没有 .gitignore 就无法静态判断
+        return False
+
+
+def _env_selfcheck() -> None:
+    """启动自检（§4.3③）：.env 含明文凭据，必须在启动时就确认它不会被提交。
+
+    这是**提醒**不是**拦截** —— 但时机要早：等到某天有人误提交了才发现就晚了。
+    同时报告只读模式状态，避免"开了还是没开"只能靠试。
+    """
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        log.info("[selfcheck] 未发现 %s（如需 LLM / 项目凭据，请参考 .env.example 创建）",
+                 env_path.name)
+    elif _is_git_ignored(env_path):
+        log.info("[selfcheck] 密钥文件已就位且已被 git 忽略：%s", env_path.name)
+    else:
+        log.warning("[selfcheck] ⚠️ %s 含**明文凭据**却未被 .gitignore 忽略 —— "
+                    "存在误提交风险，请检查忽略规则！", env_path.name)
+    if guard.readonly():
+        log.info("[selfcheck] 只读模式已开启（%s=1）：允许查看，禁止触发任务 / 删除",
+                 guard.READONLY_ENV)
+    else:
+        log.info("[selfcheck] 只读模式未开启（如需演示/试用安全档，设 %s=1）",
+                 guard.READONLY_ENV)
+
+
 if __name__ == "__main__":
     print("=" * 56)
     print("  软件测试智能体 · Web 控制台")
@@ -1255,4 +1316,5 @@ if __name__ == "__main__":
     else:
         print(f"  访问鉴权：未开启（如需开启，在 .env 设 {console_auth.TOKEN_ENV}）")
     print("=" * 56)
+    _env_selfcheck()
     app.run(host="127.0.0.1", port=8765, debug=False)

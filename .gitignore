@@ -25,6 +25,7 @@ models_config.json
 *.sqlite
 *.sqlite3
 runs.db
+audit.jsonl
 .agent_state.json
 .agent_state.json.tmp
 agent_memory.*

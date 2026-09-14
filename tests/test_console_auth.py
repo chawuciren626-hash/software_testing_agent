@@ -53,7 +53,7 @@ def test_login_page_redirects_home_when_disabled(client):
 
 def test_auth_status_reports_disabled(client):
     d = client.get("/api/auth/status").get_json()
-    assert d == {"ok": True, "enabled": False, "authed": False}
+    assert d == {"ok": True, "enabled": False, "authed": False, "readonly": False}
 
 
 # --------------------------------------------------------------------------- #

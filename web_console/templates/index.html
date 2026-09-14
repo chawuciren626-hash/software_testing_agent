@@ -422,6 +422,11 @@ svg{display:block;}
   </header>
 
   <main class="content">
+    <!-- 只读模式横幅：STA_CONSOLE_READONLY=1 时由 JS 显示（后端也会硬拦，这里只是提前告知） -->
+    <div id="roBanner" style="display:none;background:var(--warn-soft);border:1px solid var(--warn);
+         color:#7c4a03;border-radius:10px;padding:9px 13px;margin-bottom:14px;font-size:12.5px">
+      ⚠️ 只读模式已开启（STA_CONSOLE_READONLY=1）：可以查看，但触发任务 / 删除 / 保存等写操作会被拒绝。
+    </div>
     <!-- 项目 -->
     <section class="page active" id="page-projects">
       <div class="summary" id="projSummary"></div>
@@ -754,11 +759,15 @@ window.fetch=async(...args)=>{
   if(r.status===401&&location.pathname!=='/login'){ location.href='/login'; }
   return r;
 };
-// 仅用于展示"已开启鉴权 / 退出登录"，失败不影响主流程
+// 仅用于展示"已开启鉴权 / 退出登录 / 只读模式"，失败不影响主流程
 fetch('/api/auth/status').then(r=>r.json()).then(d=>{
   if(d&&d.enabled){
     const el=document.getElementById('authLine');
     if(el) el.style.display='';
+  }
+  if(d&&d.readonly){
+    const b=document.getElementById('roBanner');
+    if(b) b.style.display='';   // 只读：提前告知，避免点了按钮才吃 403
   }
 }).catch(()=>{});
 

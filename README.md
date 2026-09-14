@@ -107,6 +107,7 @@ software_testing_agent/
 ├── web_console/                  # 可视化控制台
 │   ├── app.py                    # Flask 后端（薄封装，执行走 project_manager）
 │   ├── auth.py                   # 可选的访问鉴权
+│   ├── guard.py                  # L 层最小拦截：只读模式（STA_CONSOLE_READONLY）+ 审计（audit.jsonl）
 │   ├── run_store.py              # 任务历史 / 回归快照（SQLite）
 │   └── templates/index.html      # 单页前端（原生 JS，无框架）
 ├── agent-skills/                 # Bring-Your-Own Skills（6 个，SKILL.md 规范）
@@ -527,6 +528,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 8 | **测试不能污染工作区** | 测试产物落临时目录；靠"事后 `git checkout` 还原"= 失败静默 + 偶发假红 |
 | 9 | **出错必出声**：诊断走日志、结果走 stdout | 静默 `except` 与裸 `print` 让"红了却定位不到"反复发生。诊断进 stderr + 日志文件（带 `run_id` 可跨进程串起同一次运行），**呈现类输出**留在 stdout 以便 `\|` 管道接走 |
 | 10 | **一次运行一条线（run_id）** | 控制台任务用 `tid` 作 run_id，经 `STA_RUN_ID` 传给子进程；日志每行带它，跨进程可检索。守护见 `tests/test_obs.py` |
+| 11 | **能改状态的动作必须留痕、且能被一键禁掉** | 控制台一旦暴露到局域网，"谁都点得动、出事了查不到"就是两个缺口。所以：`/api/*` 的写操作各留一行 `audit.jsonl`（谁/何时/哪个项目/结果，**被拦下的尝试也留痕**）；`STA_CONSOLE_READONLY=1` 一键切成只读（写 403、读放行、登录不受影响）。守护见 `tests/test_console_guard.py` |
 
 > 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
 > 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，
