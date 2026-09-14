@@ -2022,20 +2022,28 @@ td.gate-cell{{font-weight:700;white-space:nowrap;}}
 
 
 def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] = None,
-                 use_llm: bool = False, agentic: bool = False) -> Path:
+                 use_llm: bool = False, agentic: bool = False,
+                 out_dir: Optional[str] = None, cases_path: Optional[str] = None) -> Path:
     """统一流水线：需求 -> 用例 -> [接口自动化] -> 报告总览。
 
     供 CLI ``run`` 与轻量入口（software_testing_agent.py）共用，消除双入口漂移。
     不依赖 LLM；传入 use_llm=True 且配置 LLM_API_KEY（OpenAI 兼容，如 Qwen/DeepSeek，
     provider 由 LLM_PROVIDER 决定）时需求→用例走 LLM 增强，失败自动降级规则版。
     agentic=True（需配合 use_llm）走智能体多步自审编排，质量更高但 4 次 LLM 调用。
+
+    out_dir / cases_path：把产物落到指定目录（**给自动化测试用，默认行为不变**）。
+    不传时仍写仓库（cases.md 是受版本控制的产物、报告落仓库根），这是正常用法；
+    但测试若沿用默认路径就会**污染工作区**（还得靠 `git checkout` 事后还原），
+    且仓库根的文件可能被编辑器/预览面板占用 → Windows 上偶发 PermissionError。
+    让调用方能指定落盘位置，测试即可完全隔离，不需要任何事后清理。
     """
     # 1) 需求 -> 用例
     sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
     import generate_cases as gc  # noqa: F401  (延迟导入，避免基座依赖常驻)
     text = Path(req_file).read_text(encoding="utf-8")
     md = gc.generate_from_text(text, use_llm=use_llm, agentic=agentic, source=req_file)
-    cases_md = ROOT / "extensions" / "requirements_to_cases" / "cases.md"
+    cases_md = Path(cases_path) if cases_path else ROOT / "extensions" / "requirements_to_cases" / "cases.md"
+    cases_md.parent.mkdir(parents=True, exist_ok=True)
     cases_md.write_text(md, encoding="utf-8")
     items = gc.parse_requirements(text)
     _, rows = _parse_cases(md)
@@ -2076,7 +2084,8 @@ def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] =
     sys.path.insert(0, str(ROOT / "extensions" / "reporting"))
     import generate_report as gr  # noqa: F401
     html = gr.render()
-    out = ROOT / "test_report_index.html"
+    out = (Path(out_dir) if out_dir else ROOT) / "test_report_index.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
     print(f"[3/3] 报告聚合：已生成 {out}")
     return out

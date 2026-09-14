@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 import project_manager as pm
 
 
@@ -384,25 +386,42 @@ def test_load_projects_skips_disabled(tmp_path, monkeypatch):
 
 
 def test_run_pipeline_no_api_smoke(tmp_path):
-    """S4 守护：统一流水线（无接口）能跑通并产出报告。自清理避免污染仓库。"""
-    import subprocess as _sp
+    """S4 守护：统一流水线（无接口）能跑通并产出报告，且**产物全部落在 tmp_path**。
+
+    为什么强调落盘位置：这个用例早期直接跑默认路径，会往仓库里写 cases.md（受版本控制）
+    和仓库根的 test_report_index.html，再靠 `git checkout` 事后还原。
+    两个问题：① 还原失败是静默的（stdout/stderr 全丢），工作区可能留脏；
+    ② 仓库根文件可能被编辑器/预览面板占用，Windows 上会偶发 PermissionError —— 真实出现过一次
+    未能复现的红，正是这类环境相关抖动。改成 out_dir/cases_path 注入后，测试与仓库完全隔离，
+    既不需要事后清理，也不再受"文件被谁打开着"影响。
+    """
     from pathlib import Path as _P
 
     req = tmp_path / "req.md"
     req.write_text("1. 用户登录\n2. 管理员查看列表\n", encoding="utf-8")
-    out = pm.run_pipeline(str(req), run_api=False)
-    try:
-        assert isinstance(out, _P)
-        assert out.exists()
-        # cases.md 已被生成逻辑覆盖，还原到 git 版本，保持仓库干净
-    finally:
-        try:
-            out.unlink()
-        except OSError:
-            pass
-        _sp.run(["git", "checkout", "--", "extensions/requirements_to_cases/cases.md"],
-                cwd=_P(__file__).resolve().parent.parent,
-                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    out = pm.run_pipeline(str(req), run_api=False,
+                          out_dir=str(tmp_path), cases_path=str(tmp_path / "cases.md"))
+    assert isinstance(out, _P)
+    assert out.exists()
+    assert out.parent == tmp_path, f"报告应落在指定的 out_dir，实际在 {out.parent}"
+    assert (tmp_path / "cases.md").is_file()
+
+
+def test_run_pipeline_leaves_repo_untouched(tmp_path):
+    """反向守护：跑完流水线，仓库里的 cases.md 内容必须一字未改。
+
+    上面那个用例只证明"能隔离"，这条证明"没污染"——两者缺一不可：
+    前者红了说明功能坏了，后者红了说明隔离失效（比功能坏了更隐蔽）。
+    """
+    repo_cases = pm.ROOT / "extensions" / "requirements_to_cases" / "cases.md"
+    if not repo_cases.is_file():
+        pytest.skip("仓库内 cases.md 不存在（全新检出时由生成逻辑创建），无法比对")
+    before = repo_cases.read_text(encoding="utf-8")
+    req = tmp_path / "req.md"
+    req.write_text("1. 用户登录\n", encoding="utf-8")
+    pm.run_pipeline(str(req), run_api=False,
+                    out_dir=str(tmp_path), cases_path=str(tmp_path / "cases.md"))
+    assert repo_cases.read_text(encoding="utf-8") == before
 
 
 # ---------- 用例结构质量分（L3 评测常态化） ----------
