@@ -482,6 +482,7 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
 RUN_META_FILE = "run_meta.json"
 PERF_SEC_FILE = "perf_security.json"
 WEB_FILE = "web.json"
+AGENTIC_FILE = "agentic.json"
 QUALITY_FILE = "quality.json"
 QUALITY_HISTORY_FILE = "quality_history.jsonl"
 
@@ -544,6 +545,113 @@ def _step_web(pdir: Path, only: Optional[str] = None, headed: bool = False,
 
 def _read_web(pdir: Path) -> Optional[Dict[str, Any]]:
     f = Path(pdir) / "artifacts" / WEB_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _agent_python() -> str:
+    """跑「AI 探索」入口的解释器。
+
+    `STA_AGENT_PYTHON` 优先：基座依赖（langgraph/langchain/langmem/playwright）可以装在
+    一个**独立环境**里，主环境（与 CI 硬门禁）不必安装 —— 这正是决策 D2 的目的。
+    """
+    return os.environ.get("STA_AGENT_PYTHON") or python_exe()
+
+
+def _agentic_contract():
+    """取用探索契约模块（零依赖，唯一定义处：extensions/agentic/agentic_contract.py）。"""
+    ext_dir = str(ROOT / "extensions" / "agentic")
+    if ext_dir not in sys.path:
+        sys.path.insert(0, ext_dir)
+    import importlib
+    return importlib.import_module("agentic_contract")
+
+
+def _step_agentic(pdir: Path, mission: Optional[Path] = None, max_steps: int = 30,
+                  timeout: Optional[float] = None, headed: bool = False) -> Dict[str, Any]:
+    """AI 探索测试（S1）：**子进程 + 明确契约**调用独立入口（§3.3 / 决策 D2）。
+
+    契约：`extensions/agentic/run_agentic.py` 输入 mission、输出 `artifacts/agentic.json`。
+    本函数只做三件事——起进程、读契约、兜底。
+
+    **降级语义**：探索是"可降级阶段"，**绝不中断流水线**；但也**绝不静默**。
+    三层兜底（外层兜里层）：
+      ① 入口内部：无 key / 超时 / 跑不出结果 → 入口自己写 degraded 契约；
+      ② 这里：子进程超时 / 非零退出 / 契约缺失或坏 JSON → **本函数合成** degraded 契约；
+      ③ 无论哪一层，降级都**落盘 + 出声**，并进 run_meta 与报告卡片
+         （否则报告看不出少了这一环 = 悄悄放松门禁）。
+
+    为什么跑之前先删旧契约：否则入口崩溃时会**读到上一轮的旧结论**，
+    把"这次没跑"伪装成"这次跑成功了"——这正是本项目反复强调的"运行前清上次证据"。
+    """
+    ac = _agentic_contract()
+    pdir = Path(pdir)
+    out_json = pdir / "artifacts" / AGENTIC_FILE
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    mission_p = Path(mission) if mission else (pdir / "mission.yaml")
+
+    # 阶段墙钟上限：默认有限（序 5 的结论——没有上限的探索等于把成本交给模型）。
+    stage_timeout = ac.default_timeout() if timeout is None else float(timeout)
+
+    print("  [AI 探索] 启动基座自主探索（独立进程；无 key / 超时 / 异常将降级并出声）...")
+    try:
+        out_json.unlink(missing_ok=True)
+    except Exception as e:      # 删不掉也不能就此放弃（顶多是"可能读到旧值"的风险）
+        log.warning("  [AI 探索] 清理旧契约失败：%s", e)
+
+    entry = ROOT / "extensions" / "agentic" / "run_agentic.py"
+    cmd = [_agent_python(), str(entry), "--project-dir", str(pdir),
+           "--mission", str(mission_p), "--max-steps", str(int(max_steps))]
+    if stage_timeout > 0:
+        cmd += ["--timeout", str(stage_timeout)]
+    if headed:
+        cmd.append("--headed")
+
+    # 进程级上限比入口内部上限**多留 60s 缓冲**：让入口自己的超时先触发，
+    # 从而写出带日志与原因的降级契约；这里的上限只用于"入口本身挂死"。
+    proc_timeout = (stage_timeout + 60.0) if stage_timeout > 0 else None
+    try:
+        r = subprocess.run(cmd, cwd=ROOT, timeout=proc_timeout, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        if r.stdout:
+            print(r.stdout.rstrip())
+        if r.returncode != 0:
+            log.warning("  [AI 探索] 入口退出码 %s（非 0；仍以契约文件为准）", r.returncode)
+    except subprocess.TimeoutExpired:
+        log.warning("  [AI 探索] ⚠ 入口进程超时（%.0fs），已终止。", proc_timeout or 0)
+    except Exception as e:      # 解释器不存在 / 权限 / OOM…
+        log.warning("  [AI 探索] ⚠ 无法启动入口进程：%s", e)
+
+    payload = _read_agentic(pdir)
+    if not payload:
+        # ② 兜底：连契约都没有 —— 合成一个降级结果，**绝不**默默返回空
+        payload = ac.build_degraded(
+            ac.DegradeReason.ERROR,
+            f"未能从独立入口取得契约（{out_json} 不存在或不可解析）。"
+            f"常见原因：解释器缺少基座依赖（可用 STA_AGENT_PYTHON 指向独立环境）、"
+            f"或入口进程被信号终止。",
+        )
+        try:
+            ac.write_result(out_json, payload)
+        except Exception as e:
+            log.warning("  [AI 探索] 兜底契约落盘失败：%s", e)
+
+    if ac.is_ok(payload):
+        print("  " + ac.render_summary_line(payload))
+    else:
+        # 降级必须出声（验收判据）：走诊断通道
+        log.warning("  " + ac.render_degrade_warning(payload))
+        print("  " + ac.render_summary_line(payload))
+    return payload
+
+
+def _read_agentic(pdir: Path) -> Optional[Dict[str, Any]]:
+    f = Path(pdir) / "artifacts" / AGENTIC_FILE
     if not f.is_file():
         return None
     try:
@@ -1023,6 +1131,78 @@ def _web_card_html(wf: Dict[str, Any]) -> str:
     )
 
 
+def _agentic_href(pdir: Path, value: Any) -> Optional[str]:
+    """把契约里的路径（相对**仓库根**）转成相对**报告所在目录**（artifacts/）的链接。
+
+    为什么要转：report.html 本身在 `artifacts/` 下，而契约里存的是仓库根相对路径。
+    直接拼会得到 `artifacts/projects/<id>/artifacts/...` 这种必然 404 的链接
+    （本项目在报告证据链上踩过同类坑）。转不出来的（指向 artifacts 之外）不链接。
+    """
+    if not value:
+        return None
+    p = Path(str(value))
+    if not p.is_absolute():
+        p = ROOT / p
+    try:
+        return str(p.resolve().relative_to((Path(pdir) / "artifacts").resolve()))
+    except Exception:
+        return None
+
+
+def _agentic_card_html(pdir: Path, ag: Dict[str, Any]) -> str:
+    """渲染「AI 探索测试」卡片（可降级阶段：状态 / 降级原因 / 发现 / 证据链接）。"""
+    ac = _agentic_contract()
+    ok = ac.is_ok(ag)
+    reason = str(ag.get("reason") or "")
+    gate = ("<span class='gate ok'>已执行</span>" if ok
+            else "<span class='gate' style='background:var(--warn-soft);color:var(--warn)'>已降级</span>")
+
+    sub = (f"LLM：<code>{_h(ag.get('provider') or '—')}</code>"
+           f" · 耗时：{_h(ag.get('elapsed_s'))}s")
+    if ok:
+        sub += (f" · 任务：<code>{_h(ag.get('thread_id') or '—')}</code>"
+                f" · 结束原因：<code>{_h(ag.get('end_reason') or '未记录')}</code>"
+                f" · 目标判定：<code>{_h(ag.get('goal_verdict') or 'unknown')}</code>"
+                f" · 动作 {_h(ag.get('actions'))} 条 / 发现 {_h(ag.get('bug_count'))} 个")
+
+    # 降级说明：必须显眼，且明确"未执行 ≠ 通过"
+    degrade_html = ""
+    if not ok:
+        label = ac.DEGRADE_LABEL.get(reason, reason or "未知原因")
+        degrade_html = (
+            "<div class='ps-note bad'>⚠ 本阶段**未执行**（降级）："
+            f"{_h(label)}"
+            + (f"<br>{_h(ag.get('message') or '')}" if ag.get("message") else "")
+            + "<br>本轮结论以<b>确定性链路</b>（回归 / 性能安全 / Web）为准 —— "
+              "「未执行」不等于「通过」，请勿据此判定探索已覆盖。</div>"
+        )
+
+    bugs = ag.get("bugs") or []
+    bugs_html = ""
+    if ok and bugs:
+        items = "".join(f"<li>{_h(b)}</li>" for b in bugs)
+        bugs_html = (f"<div class='ps-h'>探索发现 <span class='count'>{len(bugs)}</span></div>"
+                     f"<div class='ps-note warn'>以下为基座探索的**原始记录**，"
+                     f"未经结构化与定级（不自动作为缺陷提交）："
+                     f"<ul class='ps-list'>{items}</ul></div>")
+
+    links = []
+    for key, label in (("report_dir", "探索报告目录"), ("action_tape", "动作磁带"),
+                       ("log", "完整日志")):
+        href = _agentic_href(pdir, ag.get(key))
+        if href:
+            links.append(f"<a href='{_h(href)}'>{label}</a>")
+    links_html = (f"<div class='ps-sub'>证据：{' · '.join(links)}</div>") if links else ""
+
+    return (
+        "<div class='card'>"
+        f"<div class='card-title'>AI 探索测试（可降级阶段）{gate}</div>"
+        f"<div class='ps-sub'>{sub}</div>"
+        f"{degrade_html}{bugs_html}{links_html}"
+        "</div>"
+    )
+
+
 def _step_diff(pid: str, pdir: Path, reg: Dict[str, Any],
                run_store: Any = None) -> Optional[Dict[str, Any]]:
     """失败项新旧对比：把「这次新红的」从「一直红的」里挑出来。
@@ -1441,6 +1621,24 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
                         f"{_qt}</span></div>")
         quality_card_html = _quality_card_html(_q)
 
+    # AI 探索测试（执行过才有；**可降级阶段**：降级也照实展示，不渲染成绿灯）
+    _ag = _read_agentic(pdir)
+    agentic_item = ""
+    agentic_card_html = ""
+    if _ag:
+        if _agentic_contract().is_ok(_ag):
+            agentic_item = ("<div class='summary-item'><span class='k'>AI 探索</span>"
+                            f"<span class='v' style='font-size:15px;font-weight:800;color:var(--ok)'>"
+                            f"已执行 {_h(_ag.get('bug_count', 0))} 发现</span></div>")
+        else:
+            _reason = _agentic_contract().DEGRADE_LABEL.get(
+                str(_ag.get('reason')), str(_ag.get('reason') or '未执行'))
+            _reason = _h(_reason).replace("'", "&#39;")     # 属性值用单引号包裹，先转义
+            agentic_item = ("<div class='summary-item'><span class='k'>AI 探索</span>"
+                            f"<span class='v' style='font-size:15px;font-weight:800;color:var(--warn)'"
+                            f" title='{_reason}'>已降级</span></div>")
+        agentic_card_html = _agentic_card_html(pdir, _ag)
+
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>测试报告 - {pid}</title>
@@ -1573,6 +1771,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   {gen_item}
   {ps_item}
   {web_item}
+  {agentic_item}
   {quality_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
@@ -1585,6 +1784,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 {ps_card_html}
 
 {web_card_html}
+
+{agentic_card_html}
 
 {defects_card_html}
 
@@ -1802,6 +2003,30 @@ def cmd_run(args: argparse.Namespace) -> None:
                                    "summary": wf.get("summary", "")}
         _write_run_meta(pdir, **_meta_fields)
 
+    # ⑥ AI 探索测试（--explore 开启）：**可降级阶段**，不是门禁。
+    # 缺 mission.yaml 时同样**不静默跳过**（与 --web 同源口径）：显式告警并记入 run_meta。
+    # 注意：降级**不影响退出码** —— 探索只产出"发现"，不产出 pass/fail；
+    # 但它"有没有真的跑"必须留在案（否则报告看不出少了这一环）。
+    if getattr(args, "explore", False):
+        _mission_arg = getattr(args, "mission", None)
+        if not (pdir / "mission.yaml").is_file() and not _mission_arg:
+            log.warning("  [AI 探索] ⚠ 未执行：缺少 %s；本次不产出探索结论"
+                        "（不得据此判为「已探索」），请补任务声明后重跑 --explore。",
+                        pdir / "mission.yaml")
+            _meta_fields["agentic"] = {"executed": False, "status": None,
+                                      "reason": "not_configured",
+                                      "summary": "缺少 mission.yaml，未执行"}
+        else:
+            _ag = _step_agentic(
+                pdir,
+                mission=Path(_mission_arg) if _mission_arg else None,
+                max_steps=int(getattr(args, "explore_max_steps", 30) or 30),
+                timeout=getattr(args, "explore_timeout", None),
+                headed=bool(getattr(args, "explore_headed", False)),
+            )
+            _meta_fields["agentic"] = _agentic_contract().summarize_for_meta(_ag)
+        _write_run_meta(pdir, **_meta_fields)
+
     # 失败项新旧对比：**必须在写本次快照之前**做（此刻历史里还没有本次）
     diff_payload: Optional[Dict[str, Any]] = None
     try:
@@ -1931,6 +2156,34 @@ def cmd_web(args: argparse.Namespace) -> None:
     cases = pdir / "artifacts" / "cases.md"
     _step_report(args.id, pdir, cases if cases.is_file() else None, _read_regression(pdir))
     sys.exit(0 if res.get("all_pass") else 1)
+
+
+def cmd_explore(args: argparse.Namespace) -> None:
+    """AI 探索测试（独立子命令）。
+
+    门禁语义与 ④/⑤ **不同**：探索不产出 pass/fail，所以
+      - `ok`        → 退出码 0；
+      - `degraded`  → 退出码 **3**（"没执行"，既不是通过也不是产品失败）。
+    刻意与"门禁失败=1"区分开：把"未执行"和"执行了但不过"混成同一个码，
+    正是本项目反复强调的"三态要分开"。
+    """
+    meta = load_project(args.id)
+    pdir = PROJECTS_DIR / args.id
+    base_url = (meta.get("env", {}) or {}).get("base_url", "")
+    print(f"== AI 探索测试：{args.id}（环境 {base_url or '未配置'}）==")
+    res = _step_agentic(pdir,
+                        mission=Path(args.mission) if getattr(args, "mission", None) else None,
+                        max_steps=int(getattr(args, "max_steps", 30) or 30),
+                        timeout=getattr(args, "timeout", None),
+                        headed=bool(getattr(args, "headed", False)))
+    # 同步刷新报告，让「AI 探索」卡片立即可见；并留案到 run_meta（增量更新，不动别家字段）
+    ac = _agentic_contract()
+    _merge_run_meta(pdir, agentic=ac.summarize_for_meta(res))
+    cases = pdir / "artifacts" / "cases.md"
+    _step_report(args.id, pdir, cases if cases.is_file() else None, _read_regression(pdir))
+    if getattr(args, "json", False):
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    sys.exit(0 if ac.is_ok(res) else 3)
 
 
 def cmd_dashboard(args: argparse.Namespace) -> None:
@@ -2211,6 +2464,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="追加 ④ 性能与安全冒烟（并发延迟 + 鉴权/注入/泄露/配置检查）")
     r.add_argument("--web", action="store_true",
                    help="追加 ⑤ Web UI 冒烟（Playwright 声明式场景，需项目下存在 web.yaml）")
+    r.add_argument("--explore", action="store_true",
+                   help="追加 ⑥ AI 探索测试（基座自主探索；需项目下存在 mission.yaml）。"
+                        "该阶段**可降级**：无 key/超时/异常时降级并出声，不会让全流程变红")
+    r.add_argument("--mission", default=None,
+                   help="配合 --explore：指定 mission 文件（默认 <项目>/mission.yaml）")
+    r.add_argument("--explore-max-steps", type=int, default=30, metavar="N",
+                   help="配合 --explore：基座软步数上限（默认 30）")
+    r.add_argument("--explore-timeout", type=float, default=None, metavar="SEC",
+                   help="配合 --explore：阶段墙钟上限（秒），默认取 STA_EXPLORE_TIMEOUT / 1800")
+    r.add_argument("--explore-headed", action="store_true",
+                   help="配合 --explore：浏览器带界面跑（调试用）")
     r.add_argument("--quality-min", type=int, default=None, metavar="N",
                    help="【可选，默认不启用】用例结构质量分低于 N 时按失败退出（非 0）。"
                         "默认不卡：结构分是形式检查，可以注水刷高，作为默认门禁会鼓励刷分；"
@@ -2236,6 +2500,16 @@ def build_parser() -> argparse.ArgumentParser:
     wb.add_argument("--browser", choices=["chromium", "firefox", "webkit"],
                     help="覆盖 web.yaml 中的浏览器")
     wb.set_defaults(func=cmd_web)
+
+    ex = sub.add_parser("explore", help="⑥ AI 探索测试（基座自主探索；可降级阶段）")
+    ex.add_argument("id")
+    ex.add_argument("--mission", default=None, help="mission 文件（默认 <项目>/mission.yaml）")
+    ex.add_argument("--max-steps", type=int, default=30, help="基座软步数上限（默认 30）")
+    ex.add_argument("--timeout", type=float, default=None,
+                    help="阶段墙钟上限（秒），默认取 STA_EXPLORE_TIMEOUT / 1800；0 表示不限")
+    ex.add_argument("--headed", action="store_true", help="浏览器带界面跑（调试用）")
+    ex.add_argument("--json", action="store_true", help="输出契约 JSON")
+    ex.set_defaults(func=cmd_explore)
 
     g = sub.add_parser("regression", help="仅核心业务回归")
     g.add_argument("id")

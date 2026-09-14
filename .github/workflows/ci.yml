@@ -66,6 +66,9 @@ jobs:
             tests/test_console_snapshot_dedupe.py \
             tests/test_console_guard.py \
             tests/test_guardrails.py \
+            tests/test_agentic_contract.py \
+            tests/test_agentic_entry.py \
+            tests/test_agentic_wiring.py \
             tests/test_lessons.py \
             tests/test_focus.py \
             tests/test_gemini_cases.py \

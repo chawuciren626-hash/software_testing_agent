@@ -755,6 +755,8 @@ async def run_missions():
                 tokens=int(final_state.values.get("tokens_used", 0)),
                 actions=len(tape),
                 bugs=len(bugs_found),
+                # 缺陷原文一并落档（序 6 独立入口契约要输出 "bugs"，只给计数下游无法展示）
+                bug_items=bugs_found,
                 limits=limits,
             )
             try:

@@ -1,0 +1,21 @@
+# AI 探索测试（S1 独立入口）的依赖清单 —— **基座重依赖**，刻意与主环境隔离。
+#
+# 为什么要独立一份（决策 D2，见 docs/HARNESS_ARCHITECTURE_REVIEW.md §3.3）：
+#   langgraph / langchain / langmem / playwright 这些依赖只被"探索阶段"需要。
+#   把它们装进主环境会让 CI 的**硬门禁**安装路径变重、结论变慢、受第三方升级影响变大；
+#   装在这里则"确定性流水线"与"LLM 探索"两套环境互不牵连。
+#
+# 推荐用法（给探索入口单独准备一个解释器，主环境不必安装）：
+#   python -m venv .venv-agent
+#   .venv-agent/Scripts/pip install -r extensions/agentic/requirements-agent.txt   # Windows
+#   .venv-agent/bin/pip     install -r extensions/agentic/requirements-agent.txt   # macOS/Linux
+#   STA_AGENT_PYTHON=.venv-agent/Scripts/python python project_manager.py explore <项目id>
+#
+# 环境已装好基座依赖时（例如仓库根的 .venv，或 CI 的 base-tests 作业）无需重复安装。
+#
+# 说明：`-r` 的相对路径按**本文件所在目录**解析，故用 ../../ 回到仓库根。
+# 直接复用 uv 生成的锁文件（requirements.txt，源 = pyproject.toml），
+# 避免在这里手抄一遍版本号 —— 手抄必然与 pyproject 漂移。
+-r ../../requirements.txt
+
+# 探索入口自身只用标准库 + agentic_contract（零依赖），不额外声明。

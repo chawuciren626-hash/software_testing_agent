@@ -351,9 +351,15 @@ def classify_end_reason(*, forced: Optional[EndReason] = None,
 
 def build_result(*, thread_id: str, end_reason: EndReason, goal_verdict: GoalVerdict,
                  reasons: Sequence[str] = (), turns: int = 0, tokens: int = 0,
-                 actions: int = 0, bugs: int = 0,
+                 actions: int = 0, bugs: int = 0, bug_items: Sequence[Any] = (),
                  limits: Optional[Limits] = None) -> Dict[str, Any]:
-    """落档到 `report_<thread_id>/result.json` 的结构化结果（给 V 层/报告链消费）。"""
+    """落档到 `report_<thread_id>/result.json` 的结构化结果（给 V 层/报告链消费）。
+
+    `bug_items` 是**缺陷原文**（可选、新增）：序 6 的独立入口契约要求输出"bugs"，
+    而只给计数无法让下游展示/归档发现内容。加字段而不是改字段 ——
+    老消费方读 `bugs`（计数）不受影响。原文只做截断，**不做结构化推断**
+    （"从标题反解字段"那类做法不可靠，见 README 判据）。
+    """
     return {
         "thread_id": thread_id,
         "end_reason": end_reason.value if isinstance(end_reason, EndReason) else str(end_reason),
@@ -363,6 +369,7 @@ def build_result(*, thread_id: str, end_reason: EndReason, goal_verdict: GoalVer
         "tokens": int(tokens),
         "actions": int(actions),
         "bugs": int(bugs),
+        "bug_items": [str(b).strip()[:500] for b in (bug_items or []) if str(b).strip()],
         "limits": limits.as_dict() if limits is not None else None,
     }
 

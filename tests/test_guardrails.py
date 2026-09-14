@@ -206,6 +206,28 @@ def test_build_result_is_json_serializable_and_complete():
     assert json.loads(json.dumps(r)) == r               # 必须能直接落 result.json
 
 
+def test_build_result_carries_bug_items_for_downstream():
+    """序 6 契约要求 result.json 输出 "bugs" —— 只给计数时下游无法展示发现内容。
+
+    加字段不改字段：`bugs`（计数）保持不变，`bug_items` 是新增的原文列表。
+    空/纯空白项要丢掉（否则报告里会渲染出空条目）。
+    """
+    import json
+    r = g.build_result(thread_id="t1", end_reason=g.EndReason.COMPLETED,
+                       goal_verdict=g.GoalVerdict.ACHIEVED, bugs=2,
+                       bug_items=["按钮无响应", "   ", "", "表单未校验", "x" * 900])
+    assert r["bugs"] == 2
+    assert r["bug_items"][:2] == ["按钮无响应", "表单未校验"]
+    assert len(r["bug_items"]) == 3 and len(r["bug_items"][-1]) == 500    # 只截断，不改写
+    assert json.loads(json.dumps(r)) == r
+
+
+def test_build_result_bug_items_defaults_to_empty():
+    r = g.build_result(thread_id="t1", end_reason=g.EndReason.ERROR,
+                       goal_verdict=g.GoalVerdict.UNKNOWN)
+    assert r["bug_items"] == []
+
+
 def test_render_verdict_markdown_marks_authority():
     r = g.build_result(thread_id="t1", end_reason=g.EndReason.BLOCKED,
                        goal_verdict=g.GoalVerdict.UNKNOWN, reasons=["算不出"])

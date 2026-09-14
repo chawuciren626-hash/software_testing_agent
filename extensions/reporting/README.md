@@ -85,6 +85,10 @@
 > 该 CI 设计复用了你 api_auto_demo 中已验证的「钉钉 + 163 邮件」通知经验。
 
 ## 待办
-- [ ] 接入基座 Web 探索产物：`agent-explorer` 跑完的 `report_*` 自动进聚合。
+- [x] 接入基座探索产物（**2026-09-14，序 6**）：改由**项目报告**承接而不是根目录 glob ——
+  探索阶段以独立进程跑在 `projects/<id>/artifacts/agentic_run/` 下（不污染仓库根），
+  契约落 `artifacts/agentic.json`，`project_manager._step_report` 据此渲染「AI 探索测试」卡片
+  （含降级原因与证据链接），并写进 `run_meta`。根目录 `generate_report.py` 的 `report_*` glob **保持原样**。
 - [ ] 在通知中附 Allure 报告的下载链接/摘要。
 - [ ] 增加失败用例的明细摘要到通知正文（当前只到场景级 `summary`）。
+- [ ] 把探索发现（`bug_items`，原文）折叠进缺陷草稿链 —— 当前只展示、**不自动提单、不定级**（判据 #7）。

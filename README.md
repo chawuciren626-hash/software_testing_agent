@@ -245,6 +245,27 @@ software_testing_agent/
   增量更新走 `_merge_run_meta()`，**整体覆盖会把上次的性能安全、Web 结论抹掉**。
 - 跨项目看板：一键汇总各项目最近一次回归、性能安全与 Web 冒烟的三组门禁状态。
 
+### 4.10 ⑥ AI 探索测试（`extensions/agentic/`）
+
+把基座（LangGraph Supervisor-Worker 群）的**自主探索**接进确定性流水线。
+接入方式：**独立入口 + 子进程**（决策 D2，见审阅报告 §3.3）——
+`project_manager` 以 `run_agentic.py` 子进程调用，输入一个 `mission.yaml`、
+输出结构化契约 `artifacts/agentic.json`，再进报告卡片与 `run_meta`。
+
+- **为什么不 import 进 `project_manager`**：基座需要 langgraph / langchain / langmem / playwright，
+  import 会把重依赖拖进刻意精简的 CI 硬门禁、把"LLM 不确定性"与"确定性门禁"的语义混在一个进程，
+  并与刚消除的双入口漂移反向。依赖单独放 `extensions/agentic/requirements-agent.txt`。
+- **可降级阶段（不是门禁）**：探索只产出**发现**，不产出 pass/fail。
+  `无 key / 超时 / 异常 / 缺任务` → 降级，**回落确定性链路并如实出声**；
+  `run --explore` 不因降级变红，显式 `explore` 子命令用退出码 **3** 区分「未执行」与「失败」。
+- **三层兜底**：入口内部 → `project_manager._step_agentic`（进程级：超时/非零退出/契约缺失）
+  → 报告卡片照实展示「已降级 + 原因」。**跑之前先清旧契约**，否则入口崩溃时会把上一轮的成功当成本轮。
+- **判据对齐**：降级原因**是枚举**（`no_llm_key / not_configured / timeout / error`）；
+  只有显式 `status == "ok"` 才算"跑了"；「未执行」**不渲染成绿灯**。
+- 用法：`python project_manager.py explore <id>` 或 `run <id> --explore`；
+  mission 放项目目录下 `mission.yaml`（格式见 `missions/README.md`），
+  可用 `STA_AGENT_PYTHON` 指向装有基座依赖的独立解释器、`STA_EXPLORE_TIMEOUT` 控制墙钟上限。
+
 ---
 
 ## 5. 记忆闭环：越跑越准
@@ -391,11 +412,12 @@ python project_manager.py <子命令> [参数]
 | `create` | 新建项目（交互式或全参） | `--id --name --base-url --owner --requirements-file --force` |
 | `list` | 列出已接入项目 | — |
 | `info <id>` | 查看项目详情 | — |
-| `run <id>` | **全流程**：需求→用例→接口→回归→报告 | `--llm --agentic --perf --web --quality-min N` |
+| `run <id>` | **全流程**：需求→用例→接口→回归→报告 | `--llm --agentic --perf --web --explore --quality-min N` |
 | `regression <id>` | 仅核心业务回归（适合常态化门禁） | — |
 | `rerun <id>` | 重跑单个场景，结果**合并**回报告（不覆盖） | `--scene <场景名>` |
 | `perf-security <id>` | ④ 性能与安全冒烟 | `--only perf\|security --users N --iterations N` |
 | `web <id>` | ⑤ Web UI 冒烟 | `--only <场景/标签> --headed --browser chromium\|firefox\|webkit` |
+| `explore <id>` | ⑥ AI 探索测试（**可降级阶段**，非门禁） | `--mission --max-steps N --timeout SEC --headed --json` |
 | `defects <id>` | 由最近一次结果生成缺陷草稿（不重跑） | `--json` |
 | `dashboard` | 跨项目总览看板（三组门禁状态） | — |
 
@@ -530,6 +552,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 10 | **一次运行一条线（run_id）** | 控制台任务用 `tid` 作 run_id，经 `STA_RUN_ID` 传给子进程；日志每行带它，跨进程可检索。守护见 `tests/test_obs.py` |
 | 11 | **能改状态的动作必须留痕、且能被一键禁掉** | 控制台一旦暴露到局域网，"谁都点得动、出事了查不到"就是两个缺口。所以：`/api/*` 的写操作各留一行 `audit.jsonl`（谁/何时/哪个项目/结果，**被拦下的尝试也留痕**）；`STA_CONSOLE_READONLY=1` 一键切成只读（写 403、读放行、登录不受影响）。守护见 `tests/test_console_guard.py` |
 | 12 | **对被测系统不信任，对自己也不信任** | 我们要求"HTTP 4xx/5xx 一律 FAIL、环境不可达绝不判绿"，却曾把"停不停/成没成"交给 agent 自评 —— 同一个团队两套尺度。所以探索循环必须有**硬**资源上限（`AGENT_MAX_TURNS` / `AGENT_TOKEN_BUDGET`，到顶即止且不再问模型）、结束原因**枚举化**（含 `max-turns` / `budget-exhausted`）、"达成"由**程序**按确定性断言判定（判不了记 `unknown`，**算不出就不猜**）。守护见 `tests/test_guardrails.py` |
+| 13 | **降级要出声，且"未执行"绝不渲染成绿灯** | 接进来的智能体能力只要"跑不动就悄悄跳过"，整套防假绿体系就在最不确定的一环破功。所以：① 不可用要**降级**（不是失败）并写明**枚举化原因**（缺 key / 超时 / 异常 / 未配置）；② 契约里只有显式 `status == "ok"` 才算"跑了"，缺字段一律不算；③ 消费侧**跑前清旧产物**（否则崩溃会被上一轮成功伪装成本轮）；④ 报告与 `run_meta` 照实写"已降级 + 原因"，退出码区分「未执行(3)」与「失败(1)」。守护见 `tests/test_agentic_contract.py` / `test_agentic_entry.py` / `test_agentic_wiring.py` |
 
 > 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
 > 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，

@@ -8,7 +8,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根�
 for sub in ("", "src", "web_console", "extensions", "extensions/regression",
            "extensions/perf_security",
            "extensions/web_testing", "extensions/requirements_to_cases",
-           "extensions/reporting", "tests/eval"):
+           "extensions/reporting", "extensions/agentic", "tests/eval"):
     p = os.path.join(ROOT, sub)
     if os.path.isdir(p) and p not in sys.path:
         sys.path.insert(0, p)
