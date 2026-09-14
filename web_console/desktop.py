@@ -23,6 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "extensions"))    # 共享实现层 common/*
+from common.obs import get_logger                # noqa: E402
+
+log = get_logger("desktop")
 
 
 def _free_port(preferred: int) -> int:
@@ -33,7 +37,7 @@ def _free_port(preferred: int) -> int:
                 s.bind(("127.0.0.1", p))
                 return p
             except OSError:
-                continue
+                continue  # 可忽略：端口被占用是预期探测结果，顺延到下一个即可
     return preferred
 
 
@@ -44,7 +48,7 @@ def _keep_alive(url: str) -> None:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        return
+        return  # 可忽略：Ctrl+C 是正常退出方式，不是异常
 
 
 def main() -> None:
@@ -91,8 +95,8 @@ def main() -> None:
 
     try:
         import webview
-    except ImportError:
-        print("未安装 pywebview，已回退到浏览器。安装：pip install pywebview")
+    except ImportError as e:
+        log.warning("未安装 pywebview，已回退到浏览器：%s（安装：pip install pywebview）", e)
         webbrowser.open(url)
         _keep_alive(url)
         return
@@ -110,7 +114,7 @@ def main() -> None:
         )
         webview.start()
     except Exception as exc:  # 无图形环境 / 缺少 WebView2 运行时等
-        print(f"无法创建原生窗口（{exc}），已回退为仅服务模式。")
+        log.warning("无法创建原生窗口，已回退为仅服务模式：%s", exc)
         webbrowser.open(url)
         _keep_alive(url)
 

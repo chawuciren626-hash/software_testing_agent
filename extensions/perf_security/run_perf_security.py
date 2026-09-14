@@ -714,7 +714,7 @@ def _check_stacktrace(base_url: str, auth: Dict[str, Any],
                 resp = sess.request(p["method"], url, json=p.get("body") or {},
                                     timeout=DEFAULT_TIMEOUT)
         except Exception:
-            continue
+            continue  # 可忽略：探测请求失败 → 该点保持"不可达"，由基线判定统一体现
         reachable = True
         text = (resp.text or "")[:4000]
         low = text.lower()

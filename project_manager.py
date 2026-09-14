@@ -48,6 +48,17 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = Path(os.environ.get("STA_ROOT") or Path(__file__).resolve().parent)
 PROJECTS_DIR = ROOT / "projects"
 
+# 统一日志出口（可观测性）：extensions/common/obs.py。
+# 显式把 extensions/ 挂进 sys.path 再 import —— 与下面 `_common()` 惰性引入同一目的，
+# 让根目录脚本也能取到共享实现层。obs 只依赖标准库，导入成本可忽略。
+# 见 docs/HARNESS_ARCHITECTURE_REVIEW.md §4.2 / §7 序 3。
+_EXTENSIONS_DIR = str(ROOT / "extensions")
+if _EXTENSIONS_DIR not in sys.path:
+    sys.path.insert(0, _EXTENSIONS_DIR)
+from common.obs import get_logger, adopt_env_run_id, RUN_ID_ENV          # noqa: E402
+
+log = get_logger("project_manager")
+
 
 def _common(mod: str):
     """取用 `extensions/common` 下的共享实现模块（跨扩展的**唯一定义处**）。
@@ -258,7 +269,7 @@ def _ask(label: str, default: str, provided: Optional[str]) -> str:
             val = input(f"{label} [{default}]: ").strip()
             return val or default
     except Exception:
-        pass
+        pass  # 可忽略：非终端环境（管道 / CI）本就不该交互，按默认值继续是预期行为
     return default
 
 
@@ -358,8 +369,10 @@ def cmd_create(args: argparse.Namespace) -> None:
         import knowledge as kn  # noqa: E402
         if kn.ensure_template(pdir):
             print(f"  已生成知识库模板 -> {pdir / 'knowledge.md'}（可选，写了才生效）")
-    except Exception:
-        pass
+    except Exception as e:
+        # 必须出声：项目已建成、但知识库模板没生成 —— 用户不会发现少了一个文件，
+        # "长期记忆"这条能力就此静默失效。
+        log.warning("  知识库模板生成失败（项目已创建，模板缺失）：%s", e)
     (pdir / "artifacts").mkdir(exist_ok=True)
     print(f"\n✅ 项目 {pid} 已创建：{pdir}")
     print("   下一步：")
@@ -458,7 +471,7 @@ def _step_rerun(pid: str, pdir: Path, scene: str) -> Dict[str, Any]:
     summary = rr.rerun_one(pdir / "project.yaml", pdir / "regression.yaml",
                            out_json, scene, repo_root=ROOT)
     if summary.get("error"):
-        print(f"  [单场景重跑] 失败：{summary['error']}", file=sys.stderr)
+        log.error("  [单场景重跑] 失败：%s", summary["error"])
         return summary
     # 报告同步刷新：保留既有的需求->用例预览（cases.md 存在才带上）
     cases = pdir / "artifacts" / "cases.md"
@@ -571,7 +584,9 @@ def _step_quality(pdir: Path, cases_md: Optional[str],
             _cf.write_text(pv.attach_quality(_cf.read_text(encoding="utf-8"), total),
                            encoding="utf-8")
     except Exception as e:      # 回写失败不能让打分失败
-        print(f"  [质量分] 回写溯源标记失败（不影响打分）：{e}")
+        # 必须出声：分数没写进 cases.md，单独把用例文件发出去评审的人会以为
+        # "这批用例没有质量分"，与"分很低"是两回事。
+        log.warning("  [质量分] 回写溯源标记失败（不影响打分）：%s", e)
     d = cq.delta(cq.read_history(pdir))
     if total is None:
         print("  [质量分] 无法计分（用例为空或缺少可判定维度），已跳过")
@@ -630,8 +645,10 @@ def _read_regression(pdir: Path) -> Dict[str, Any]:
     if f.is_file():
         try:
             return json.loads(f.read_text(encoding="utf-8")) or {}
-        except Exception:
-            pass
+        except Exception as e:
+            # 必须出声：文件在、但读不出来（半写 / 截断 / 编码坏）会被上层当成
+            # "没有回归结果"，报告与看板显示成"尚未执行"，把真实故障掩盖掉。
+            log.warning("  [回归结果] 读取 %s 失败，按无结果处理：%s", f, e)
     return {}
 
 
@@ -689,7 +706,7 @@ def _parse_cases(md_text: str) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
             try:
                 meta["count"] = int(line[len("- 用例数："):].strip())
             except ValueError:
-                pass
+                pass  # 可忽略：仅供展示的元信息，解析不出就保留默认 0，不参与任何判定
 
     # 表格行解析收敛到 extensions/common/cases.parse_rows（唯一定义处）。
     return meta, _common("cases").parse_rows(md_text)
@@ -1025,7 +1042,9 @@ def _step_diff(pid: str, pdir: Path, reg: Dict[str, Any],
         try:
             history = run_store.list_snapshots(pid, limit=_DIFF_WINDOW)
         except Exception as e:
-            print(f"  [新旧对比] 读取历史失败（不影响流程）：{e}", file=sys.stderr)
+            # 必须出声：历史读不到时对比会退化成"无基线"，结论看似正常实则失真 ——
+            # 这正是最该被看见的一类静默降级。
+            log.warning("  [新旧对比] 读取历史失败（回退为无基线对比）：%s", e)
     prev = history[-1] if history else None
     payload = td.compare(reg.get("results") or [], prev=prev, history=history)
     td.write_diff(pdir, payload)
@@ -1054,6 +1073,7 @@ def _step_defects(pid: str, pdir: Path, reg: Dict[str, Any],
             import trend_diff as _td  # noqa: E402
             diff = _td.read_diff(pdir)
         except Exception:
+            # 可忽略：缺陷草稿按"无对照"处理 —— 没有对照可以接受，编错的对照不行。
             diff = None
 
     payload = df.build_defects(reg, _read_perf_security(pdir), _read_web(pdir),
@@ -1657,6 +1677,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             _lcount = len([_l for _l in _lmd.splitlines()
                            if re.match(r"^\d+\.\s", _l.strip())])
         except Exception:
+            # 可忽略：注入计数仅供溯源标记展示，取不到就记 0，不参与判定。
             _lcount = 0
 
     use_llm = bool(getattr(args, "llm", False))
@@ -1676,7 +1697,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         if cases and Path(cases).is_file() and _f_items:
             _focus = _step_focus(pdir, Path(cases), _f_items)
     except Exception as e:      # 校验失败不能中断流水线
-        print(f"  [重点覆盖] 跳过（{e}）")
+        # 必须出声：跳过校验 = 回灌闭环没有兑现，而流水线表面照常完成。
+        log.warning("  [重点覆盖] 校验跳过（回灌闭环未兑现）：%s", e)
     # 记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数
     _mode = "智能体多步自审编排" if (use_llm and use_agentic) else ("LLM 增强" if use_llm else "规则版")
     _case_count = 0
@@ -1685,6 +1707,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             _, _rows = _parse_cases(Path(cases).read_text(encoding="utf-8"))
             _case_count = len(_rows)
         except Exception:
+            # 可忽略：用例条数仅供 run_meta 溯源展示，解析失败记 0，不参与判定。
             _case_count = 0
     _req_count = 0
     try:
@@ -1694,6 +1717,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         if _rf.is_file():
             _req_count = len(_gc.parse_requirements(_rf.read_text(encoding="utf-8")))
     except Exception:
+        # 可忽略：需求条数仅供 run_meta 溯源展示，取不到记 0，不参与判定。
         _req_count = 0
     # 溯源信息**从产物回读**，不拿参数重新推一遍 ——
     # 两处各推一次迟早漂移（比如降级只发生在一处），而 cases.md 里的标记就是事实。
@@ -1750,7 +1774,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                     _qfail = ((_q or {}).get("total"), int(_qmin), _qmsg)
                 _write_run_meta(pdir, **_meta_fields)
         except Exception as e:  # 打分失败绝不能拖垮主流程
-            print(f"  [质量分] 计算失败（不影响流程）：{e}", file=sys.stderr)
+            log.warning("  [质量分] 计算失败（不影响流程）：%s", e)
 
     _step_api(args.id, pdir, base_url)
     reg = _step_regression(args.id, pdir)
@@ -1766,8 +1790,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     # 缺 web.yaml 时**不静默跳过**——静默跳过等于悄悄放松门禁，所以显式告警并记入 run_meta。
     if getattr(args, "web", False):
         if not (pdir / "web.yaml").is_file():
-            print(f"  [Web 冒烟] ⚠ 未执行：缺少 {pdir / 'web.yaml'}；"
-                  "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。", file=sys.stderr)
+            log.warning("  [Web 冒烟] ⚠ 未执行：缺少 %s；"
+                        "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。",
+                        pdir / "web.yaml")
             _meta_fields["web"] = {"executed": False,
                                    "reason": "缺少 web.yaml，未执行"}
         else:
@@ -1782,7 +1807,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     try:
         diff_payload = _step_diff(args.id, pdir, reg, run_store)
     except Exception as e:      # 对比失败不能拖垮主流程
-        print(f"  [新旧对比] 失败（不影响流程）：{e}", file=sys.stderr)
+        log.warning("  [新旧对比] 失败（不影响流程）：%s", e)
 
     run_store.insert_snapshot(args.id, reg, trigger="run")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
@@ -1791,7 +1816,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     try:
         _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
     except Exception as e:      # 草稿生成失败不能拖垮主流程
-        print(f"  [缺陷草稿] 生成失败（不影响流程）：{e}", file=sys.stderr)
+        log.warning("  [缺陷草稿] 生成失败（不影响流程）：%s", e)
 
     _step_report(args.id, pdir, cases, reg)
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
@@ -1823,7 +1848,7 @@ def cmd_regression(args: argparse.Namespace) -> None:
     try:
         diff_payload = _step_diff(args.id, pdir, reg, run_store)
     except Exception as e:
-        print(f"  [新旧对比] 失败（不影响门禁）：{e}", file=sys.stderr)
+        log.warning("  [新旧对比] 失败（不影响门禁）：%s", e)
 
     run_store.insert_snapshot(args.id, reg, trigger="regression")
     ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
@@ -1832,7 +1857,7 @@ def cmd_regression(args: argparse.Namespace) -> None:
     try:
         _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
     except Exception as e:      # 草稿生成失败不能影响门禁退出码
-        print(f"  [缺陷草稿] 生成失败（不影响门禁）：{e}", file=sys.stderr)
+        log.warning("  [缺陷草稿] 生成失败（不影响门禁）：%s", e)
 
     sys.exit(0 if reg["all_pass"] else 1)
 
@@ -2119,7 +2144,7 @@ def run_pipeline(req_file: str, run_api: bool = False, api_base: Optional[str] =
             _suffix = f"（{'; '.join(_notes)}）" if _notes else ""
             print(f"[1/3] 用例结构质量分：{_total}/100{_suffix}")
     except Exception as e:
-        print(f"[1/3] 用例结构质量分：计算失败（{e}）")
+        log.warning("[1/3] 用例结构质量分：计算失败：%s", e)
 
     # 2) 接口自动化（可选）
     if run_api:
@@ -2225,8 +2250,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     _load_dotenv()   # 密钥分离：先载入 .env，后续按变量名取真实凭据
+    # run_id 贯通：控制台触发时由 STA_RUN_ID 带入（同一次运行在 CLI 与 Web 侧同一条 id），
+    # 直接命令行运行则自行生成。之后每一行日志都带它，跨进程也能串起来。
+    adopt_env_run_id("cli")            # run_id 已进格式前缀，消息里不重复
     args = build_parser().parse_args()
-    args.func(args)
+    log.info("== 运行开始 cmd=%s（run_id 来源：%s）==", args.cmd,
+             "STA_RUN_ID（由控制台传入）" if os.environ.get(RUN_ID_ENV) else "本次生成")
+    try:
+        args.func(args)
+    except SystemExit:
+        raise                       # 退出码语义由各子命令决定，不要在这里改写
+    except Exception:
+        # 未捕获异常必须留下带 run_id 的记录：否则崩溃只剩 traceback，
+        # 而它混在业务输出里，正是"红了却定位不到"的来源。
+        log.exception("命令 %s 执行失败（未捕获异常）", args.cmd)
+        raise
 
 
 if __name__ == "__main__":

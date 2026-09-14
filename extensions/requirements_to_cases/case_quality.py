@@ -368,7 +368,7 @@ def read_history(pdir: Path, limit: int = HISTORY_KEEP) -> List[Dict[str, Any]]:
             if isinstance(obj, dict):
                 out.append(obj)
         except ValueError:
-            continue
+            continue  # 可忽略：坏行跳过，不因一行脏数据让整个趋势挂掉
     return out[-limit:]
 
 

@@ -24,11 +24,22 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import requests  # Gemini REST 调用零额外依赖
 
 import provenance  # 生成溯源：与 generate_cases 同目录，调用方已把该目录放进 sys.path
+
+# 统一日志出口（共享实现层）：extensions/ 挂进 sys.path 后再 import。
+# 降级消息走日志而非 stdout —— 控制台侧 stderr 与 stdout 合并采集，UI 上一字不少，
+# 而 CLI/CI 侧它落到 stderr，不再与用例内容混在同一个管道里。
+_EXTENSIONS_DIR = str(Path(__file__).resolve().parents[1])
+if _EXTENSIONS_DIR not in sys.path:
+    sys.path.insert(0, _EXTENSIONS_DIR)
+from common.obs import get_logger  # noqa: E402
+
+log = get_logger("generate_cases")
 
 
 def parse_requirements(text: str) -> List[str]:
@@ -204,7 +215,7 @@ def gemini_generate(text: str, api_key: Optional[str] = None,
             try:
                 detail = r.json().get("error", {}).get("message", "")
             except Exception:
-                pass
+                pass  # 可忽略：错误体不是 JSON 时用原始文本兜底，且紧接着就抛错带出详情
             raise GeminiError(f"400 请求被拒：{detail or r.text[:200]}")
         if r.status_code == 403:
             raise GeminiError("403 无权限（key 无效或未开通 Generative Language API）")
@@ -489,10 +500,13 @@ def generate_with_meta(text: str, use_llm: bool = False,
             )
             return provenance.stamp(md, meta), meta
         except LLMError as e:
-            print(f"  [需求->用例] LLM 增强失败，已自动降级为规则版：{e}")
+            # 降级必须出声：产物仍是规则版、流程照常完成，不说的话用户会以为
+            # 拿到的是 LLM 增强的结果（"悄悄降级"是假绿的另一种形态）。
+            log.warning("  [需求->用例] LLM 增强失败，已自动降级为规则版：%s", e)
             degraded, reason = True, str(e)
         except Exception as e:      # 非 LLMError 也要降级，但**记下真实类名**便于排查
-            print(f"  [需求->用例] LLM 增强异常，已自动降级为规则版：{type(e).__name__}: {e}")
+            log.warning("  [需求->用例] LLM 增强异常，已自动降级为规则版：%s: %s",
+                        type(e).__name__, e)
             degraded, reason = True, f"{type(e).__name__}: {e}"
 
     items = parse_requirements(text)  # 规则版只用原始需求，extra_context 不进解析

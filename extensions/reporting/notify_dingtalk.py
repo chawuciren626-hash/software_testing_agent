@@ -15,6 +15,15 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from pathlib import Path
+
+# 统一日志出口（共享实现层）：extensions/ 挂进 sys.path 后再 import。
+_EXTENSIONS_DIR = str(Path(__file__).resolve().parents[1])
+if _EXTENSIONS_DIR not in sys.path:
+    sys.path.insert(0, _EXTENSIONS_DIR)
+from common.obs import get_logger  # noqa: E402
+
+log = get_logger("notify_dingtalk")
 
 
 def _sign(secret: str) -> tuple[str, str]:
@@ -45,7 +54,8 @@ def send(text: str, webhook: str, secret: str = "") -> None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             print("钉钉通知结果：", resp.read().decode("utf-8", "replace"))
     except urllib.error.URLError as e:
-        print("钉钉通知失败：", e)
+        # 必须出声：通知没发出去，CI 那边会以为"没消息 = 一切正常"。
+        log.error("钉钉通知失败：%s", e)
 
 
 def main() -> None:

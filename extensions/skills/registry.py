@@ -107,7 +107,7 @@ def build_catalog(skills_dir: Path = SKILLS_DIR) -> dict:
         try:
             d["path"] = Path(s.path).resolve().relative_to(ROOT.resolve()).as_posix()
         except ValueError:
-            pass  # 不在仓库内的技能保留原路径
+            pass  # 可忽略：不在仓库内的技能保留原路径（跨平台相对路径仅对仓库内技能有意义）
         skills_out.append(d)
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),

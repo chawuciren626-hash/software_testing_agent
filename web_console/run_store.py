@@ -49,7 +49,7 @@ def init_db(path: Path) -> None:
             try:
                 _DB.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
             except sqlite3.OperationalError:
-                pass  # 列已存在
+                pass  # 可忽略：列已存在（旧库已补过），这正是本分支的预期命中
         _DB.execute(
             """CREATE TABLE IF NOT EXISTS snapshots(
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,

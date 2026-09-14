@@ -33,7 +33,15 @@ from typing import Any, Dict, List, Optional, Tuple
 try:  # 通知脚本与本模块同目录；被单测/其他目录导入时也能找到
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 except Exception:  # pragma: no cover
-    pass
+    pass  # 可忽略：纯防御（同一路径重复 insert 不会抛），失败也不影响通知逻辑
+
+# 统一日志出口（共享实现层）。extensions/ 挂进 sys.path 后再 import。
+_EXTENSIONS_DIR = str(Path(__file__).resolve().parents[1])
+if _EXTENSIONS_DIR not in sys.path:
+    sys.path.insert(0, _EXTENSIONS_DIR)
+from common.obs import get_logger  # noqa: E402
+
+log = get_logger("gate_notify")
 
 import notify_dingtalk  # type: ignore
 import notify_email  # type: ignore
@@ -276,7 +284,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             text = Path(args.text_file).read_text(encoding="utf-8")
         except OSError as e:
-            print(f"读取摘要文件失败：{e}")
+            log.error("读取摘要文件失败：%s", e)
             return 1
         _send(text, args.dry_run, subject="软件测试智能体 · CI 门禁结果")
         return 0
@@ -292,7 +300,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             Path(args.out).write_text(text, encoding="utf-8")
         except OSError as e:
-            print(f"写入摘要文件失败：{e}")
+            log.error("写入摘要文件失败：%s", e)
 
     _send(text, args.dry_run, subject=args.title)
 

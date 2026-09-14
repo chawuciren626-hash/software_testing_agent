@@ -97,6 +97,9 @@ from common.auth import resolve_auth as _resolve_auth                 # noqa: E4
 from common.auth import load_dotenv as _load_dotenv                   # noqa: E402
 from common.data import substitute as _substitute                     # noqa: E402
 from common.gates import all_pass as _all_pass                        # noqa: E402
+from common.obs import get_logger                                     # noqa: E402
+
+log = get_logger("web_testing")
 
 
 DEFAULT_TIMEOUT_MS = 15000
@@ -540,14 +543,17 @@ def _run_scenario(ctx: Dict[str, Any], sc: Dict[str, Any],
             f = shots_dir / f"{_slug(name)}-FAIL.png"
             page.screenshot(path=str(f), full_page=True)
             shots.append(str(f.relative_to(shots_dir.parent.parent)))
-        except Exception:
-            pass
+        except Exception as e:
+            # 必须出声：截图是失败证据链的一环。没存下来却不说，"报告里没有截图"
+            # 就会被读成"这次没有失败"。
+            log.warning("  [Web 冒烟] 失败截图保存失败：%s", e)
         try:
             rp = shots_dir.parent / f"web_repro_{_slug(name)}.spec.ts"
             rp.write_text(_repro_ts_spec(sc, base_url, auth, failed_step), encoding="utf-8")
             repro = str(rp.relative_to(shots_dir.parent.parent))
-        except Exception:
-            pass
+        except Exception as e:
+            # 必须出声：复现脚本是"把失败交出去"的载体，写不出来要让排障的人知道。
+            log.warning("  [Web 冒烟] 复现脚本写入失败：%s", e)
 
     return {"name": name, "tags": list(sc.get("tags") or []), "result": result,
             "reason": reason,
@@ -632,14 +638,16 @@ def _clean_previous_evidence(shots_dir: Path, art_dir: Path) -> int:
             try:
                 f.unlink()
                 removed += 1
-            except OSError:
-                pass
+            except OSError as e:
+                # 必须出声：清不掉旧证据 → 上一次的 FAIL 截图会被当成本次的证据，
+                # 排查时误导极大（本函数存在的全部理由就是这个）。
+                log.warning("  [Web 冒烟] 旧截图删除失败（可能残留为下次证据）：%s", e)
     for f in art_dir.glob("web_repro_*.spec.ts"):
         try:
             f.unlink()
             removed += 1
-        except OSError:
-            pass
+        except OSError as e:
+            log.warning("  [Web 冒烟] 旧复现脚本删除失败（可能残留为下次证据）：%s", e)
     return removed
 
 
@@ -691,7 +699,9 @@ def run_web(project_path: Path,
 
     if not scenarios_raw:
         msg = (f"没有匹配的场景（only={only!r}）" if only else "web.yaml 未声明任何场景")
-        print(f"  [Web 冒烟] {msg}", file=sys.stderr)
+        # 必须出声：没有场景就没有断言、没有断言不算绿 —— 但用户若只见"流程完成"
+        # 就会误以为 Web 那一道过了。
+        log.error("  [Web 冒烟] %s", msg)
 
     result: Dict[str, Any] = {
         "project_id": project.get("project_id") or project_path.parent.name,
@@ -743,7 +753,7 @@ def run_web(project_path: Path,
             baseline_reason = (f"浏览器启动失败（{str(e).splitlines()[0][:200]}）；"
                                "如需依赖系统浏览器/容器环境，请在 web.yaml 里配 launch_args，"
                                "例如 ['--no-sandbox','--disable-gpu','--disable-dev-shm-usage']")
-            print(f"  [基线] ⚠ {baseline_reason}")
+            log.warning("  [基线] ⚠ %s", baseline_reason)
             result["baseline"] = {"ok": False, "reason": baseline_reason}
             result["scenarios"] = [{"name": sc.get("name"), "result": "SKIP",
                                     "reason": baseline_reason, "tags": list(sc.get("tags") or []),
@@ -817,7 +827,7 @@ def run_web(project_path: Path,
             try:
                 browser.close()
             except Exception:
-                pass
+                pass  # 可忽略：收尾关浏览器，进程随即退出；失败不影响任何门禁结论
 
     result["total"] = len(result["scenarios"])
     result["passed"] = sum(1 for s in result["scenarios"] if s["result"] == "PASS")

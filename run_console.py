@@ -26,9 +26,15 @@ def serve() -> None:
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT / "web_console"))
     sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "extensions"))
     f = open(LOG, "a", encoding="utf-8", buffering=1)
     sys.stdout = f
     sys.stderr = f
+    # 日志出口与 CLI / 测试子进程同源（extensions/common/obs.py）。
+    # ⚠️ 刻意**不**再加 FileHandler：本进程的 stderr 已重定向到 web_server.log，
+    # 日志随 stderr 落盘；两者都配会让每条记录在同一个文件里出现两次。
+    from common.obs import setup as _obs_setup
+    _obs_setup()
     print("-" * 56)
     runpy.run_path(str(ROOT / "web_console" / "app.py"), run_name="__main__")
 

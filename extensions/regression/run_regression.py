@@ -64,6 +64,9 @@ from common.yamlio import load_yaml as _load_yaml                       # noqa: 
 from common.auth import load_dotenv, resolve_auth as _resolve_auth      # noqa: E402
 from common.data import substitute as _substitute, dig as _dig          # noqa: E402
 from common.gates import all_pass as _all_pass                          # noqa: E402
+from common.obs import get_logger                                       # noqa: E402
+
+log = get_logger("regression")
 
 
 def _login(base_url: str, auth: Dict[str, Any]) -> Optional[str]:
@@ -78,10 +81,10 @@ def _login(base_url: str, auth: Dict[str, Any]) -> Optional[str]:
             timeout=10,
         )
     except Exception as e:  # pragma: no cover
-        print(f"  [login] 请求失败：{e}", file=sys.stderr)
+        log.error("  [login] 请求失败：%s", e)
         return None
     if r.status_code >= 400:
-        print(f"  [login] 状态码 {r.status_code}：{r.text[:200]}", file=sys.stderr)
+        log.error("  [login] 状态码 %s：%s", r.status_code, r.text[:200])
         return None
     try:
         data = r.json()
@@ -150,7 +153,7 @@ def run_regression(
             bearer = tok
             print(f"  [auth] 登录成功，已获取 token（{auth['token_field']}）")
         else:
-            print("  [auth] 登录失败，仅执行无需认证的用例", file=sys.stderr)
+            log.warning("  [auth] 登录失败，仅执行无需认证的用例")
     elif auth["type"] == "bearer":
         bearer = auth["token"] or None
 
@@ -160,7 +163,7 @@ def run_regression(
         items = [it for it in items if str(it.get("name", "")) == only]
         if not items:
             msg = f"未找到名为 {only!r} 的回归场景，请检查 regression.yaml 中 core_business[].name"
-            print(f"  [错误] {msg}", file=sys.stderr)
+            log.error("  [错误] %s", msg)
             return {"project_id": project.get("project_id"), "base_url": base_url,
                     "total": 0, "passed": 0, "failed": 0, "skipped": 0,
                     "all_pass": False, "results": [], "error": msg}
@@ -224,7 +227,8 @@ def run_regression(
         except Exception as e:  # 连不上（非 HTTP 响应）：按"环境不可达"跳过并告警
             rec.update(status_code="UNREACHABLE", result="SKIP", snippet=str(e)[:200])
             results.append(rec)
-            print(f"  [SKIP] {name} [{method} {path}] -> 环境不可达")
+            log.warning("  [SKIP] %s [%s %s] -> 环境不可达：%s",
+                        name, method, path, str(e)[:200])
             continue
 
         # 断言 = 状态码 + 响应体。
@@ -284,8 +288,8 @@ def run_regression(
         out_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"  结果已写出 {out_json}")
     if passed == 0:
-        print("  ⚠ 本次回归没有任何实际执行的通过项"
-              "（环境不可达 / 未声明回归项），门禁按未通过处理。", file=sys.stderr)
+        log.warning("  ⚠ 本次回归没有任何实际执行的通过项"
+                    "（环境不可达 / 未声明回归项），门禁按未通过处理。")
     return summary
 
 
@@ -307,7 +311,7 @@ def rerun_one(
     fresh = run_regression(project_path, regression_path, None,
                            repo_root=repo_root, only=name)
     if fresh.get("error") or not fresh.get("results"):
-        print(f"  [重跑] 失败：{fresh.get('error') or '未获得执行结果'}", file=sys.stderr)
+        log.error("  [重跑] 失败：%s", fresh.get("error") or "未获得执行结果")
         return fresh
 
     new_rec = dict(fresh["results"][0])

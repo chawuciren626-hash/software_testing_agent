@@ -271,7 +271,7 @@ def parse(md: str) -> Optional[Dict[str, Any]]:
                 data["v"] = int(m.group(1))
                 return data
         except (ValueError, TypeError):
-            pass
+            pass  # 可忽略：标记块坏掉就按"无标记"处理，紧接着走 _parse_plain 降级路径
     return _parse_plain(md)
 
 
@@ -290,14 +290,14 @@ def _parse_plain(md: str) -> Optional[Dict[str, Any]]:
             try:
                 found["case_count"] = int(s[len("- 用例数："):].strip())
             except ValueError:
-                pass
+                pass  # 可忽略：只影响溯源展示的条数，缺了就不显示，不参与判定
         elif s.startswith("- 上下文注入："):
             found["_inject"] = s[len("- 上下文注入："):].strip()
         elif s.startswith("- 结构质量分："):
             try:
                 found["quality"] = float(s[len("- 结构质量分："):].split("/")[0].strip())
             except ValueError:
-                pass
+                pass  # 可忽略：只影响溯源展示的分数，缺了就不显示，不参与判定
         elif s.startswith("- ⚠️ 降级产出："):
             found["degraded"] = True
             found["degrade_reason"] = s[len("- ⚠️ 降级产出："):].split("——")[0].strip()

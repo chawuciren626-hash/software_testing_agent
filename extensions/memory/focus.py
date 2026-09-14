@@ -347,7 +347,7 @@ def read_history(pdir: Path) -> List[Dict[str, Any]]:
         try:
             out.append(json.loads(ln))
         except json.JSONDecodeError:
-            continue        # 坏行跳过而不是让整条历史失效
+            continue        # 可忽略：坏行跳过而不是让整条历史失效（单行脏数据不该毁掉趋势）
     return out
 
 

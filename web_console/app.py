@@ -48,9 +48,13 @@ else:
 
 ROOT = RES_DIR  # agent-skills / docs / models 等资源根（frozen 下为 _MEIPASS）
 sys.path.insert(0, str(RES_DIR))
+sys.path.insert(0, str(RES_DIR / "extensions"))               # 共享实现层 common/*
 sys.path.insert(0, str(RES_DIR / "extensions" / "reporting"))  # gate_notify
 import project_manager as pm  # noqa: E402  复用 load_projects / load_project
 import web_console.run_store as run_store  # noqa: E402  任务历史落盘 SQLite
+from common.obs import get_logger, set_run_id  # noqa: E402
+
+log = get_logger("web_console")
 run_store.init_db(DATA_ROOT / "runs.db")
 
 # 启动即把根目录 .env 载入进程环境，使 Web 端的 LLM 配置（LLM_* 变量）对
@@ -151,6 +155,10 @@ def _spawn_task(kind: str, pid: str, args: List[str],
     run_store.insert_run(task)
 
     def _run() -> None:
+        # run_id 贯通：本次任务的 tid 就是它的 run_id。
+        # ⚠️ 必须在**工作线程内部**设置 —— ContextVar 不会自动跨线程继承
+        # （线程拿到的是空上下文），忘了这一步控制台侧日志就丢掉 run_id。
+        set_run_id(tid)
         proc: Optional[subprocess.Popen] = None
         timer: Optional[threading.Timer] = None
         # 子进程启动前记录快照基数：run/regression 子进程自己会写一条快照，
@@ -161,9 +169,15 @@ def _spawn_task(kind: str, pid: str, args: List[str],
         except Exception:      # 探针失败：退化为"总是补写"，宁可多一条也不静默丢档
             snaps_before = None
         try:
+            # 跨进程携带 run_id：子进程（project_manager）读 STA_RUN_ID 后沿用同一条 id，
+            # 于是"控制台日志"与"流水线日志"能被串成同一次运行。
+            env = os.environ.copy()
+            env[pm.RUN_ID_ENV] = tid
+            log.info("[task] 开始 kind=%s pid=%s cmd=%s", kind, pid, task["command"])
             proc = subprocess.Popen(
                 [pm.python_exe(), pm_script(), *full_args],
                 cwd=str(DATA_ROOT),
+                env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
             )
@@ -181,10 +195,14 @@ def _spawn_task(kind: str, pid: str, args: List[str],
             task["exit_code"] = rc
             # regression 命令门禁语义：0=通过（或仅 run 正常结束）
             task["status"] = "success" if rc == 0 else "failed"
+            log.info("[task] 结束 exit_code=%s status=%s", rc, task["status"])
         except Exception as e:  # pragma: no cover
+            # 两个受众、两条通道，都保留：task["log"] 是**界面**上要看到的，
+            # 日志是**排障**时要能检索/带 run_id 的。
             task["log"] = (task.get("log") or "") + f"\n执行异常：{e}"
             task["status"] = "failed"
             task["exit_code"] = -1
+            log.exception("[task] 执行异常 kind=%s pid=%s", kind, pid)
         finally:
             if timer is not None:
                 timer.cancel()
@@ -204,7 +222,7 @@ def _spawn_task(kind: str, pid: str, args: List[str],
                         run_store.insert_snapshot(pid, reg, trigger=kind,
                                                   scene=task.get("scene"))
                 except Exception as e:  # 留档失败不影响任务本身
-                    print(f"[snapshot] 写入失败（已忽略）：{e}")
+                    log.warning("[snapshot] 写入失败（任务本身不受影响，但趋势会缺一个点）：%s", e)
 
     threading.Thread(target=_run, daemon=True).start()
     return tid
@@ -438,7 +456,7 @@ def api_project_diff(pid: str) -> Any:
         labels, descs = td.STATUS_LABEL, td.STATUS_DESC
         text = td.render_text(d)
     except Exception:      # 元信息拿不到也要能展示结论，别让整个面板挂掉
-        pass
+        pass  # 可忽略：缺的是状态标签/描述文本，前端退化为显示原始状态码，结论本身完整
     payload: Dict[str, Any] = {"ok": True, "has": True, "labels": labels,
                                "descs": descs, "text": text}
     payload.update(d)      # baseline / items / counts / notes / headline / focus_new
@@ -472,7 +490,9 @@ def api_project_cases(pid: str) -> Any:
     _text = ""
     try:
         _text = req_file.read_text(encoding="utf-8")
-    except Exception:
+    except Exception as e:
+        # 必须出声：需求读不出来 → 知识库检索会基于空文本，注入等同失效。
+        log.warning("[需求读取] 失败（本次知识注入将基于空文本）：%s", e)
         _text = ""
     extra_context = None
     injected: Dict[str, int] = {"lessons": 0, "knowledge": 0}
@@ -485,7 +505,10 @@ def api_project_cases(pid: str) -> Any:
             injected["lessons"] = sum(
                 1 for _l in _lmd.splitlines()
                 if _l.strip()[:1].isdigit() and ". " in _l)
-    except Exception:
+    except Exception as e:
+        # 必须出声：lessons 没注入 → 与 CLI 的生成质量不再同源，而这种差异
+        # 在控制台界面上完全不可见（最难排查的"说不清"）。
+        log.warning("[历史易错点注入] 失败（本次未注入 lessons）：%s", e)
         extra_context = None
     try:
         import knowledge as kn  # noqa: E402
@@ -493,8 +516,9 @@ def api_project_cases(pid: str) -> Any:
         if kinj:
             injected["knowledge"] = len(kn.explain(pdir, _text)["picked"])
             extra_context = ((extra_context or "") + "\n\n" + kinj).strip() if extra_context else kinj
-    except Exception:
-        pass
+    except Exception as e:
+        # 必须出声：知识库没注入 → 生成时少了一类上下文，而界面上完全看不出差别。
+        log.warning("[知识注入] 失败（生成继续，但本次未注入知识库）：%s", e)
 
     prov: Optional[Dict[str, Any]] = None
     try:
@@ -522,7 +546,7 @@ def api_project_cases(pid: str) -> Any:
         if _f_items:
             focus = pm._step_focus(pdir, out, _f_items)
     except Exception as e:      # 校验失败不能让生成用例这个主操作失败
-        print(f"[重点覆盖] 计算失败（不影响生成）：{e}")
+        log.warning("[重点覆盖] 计算失败（不影响生成）：%s", e)
     md = out.read_text(encoding="utf-8")   # 回灌可能补了骨架行，后续一律以落盘内容为准
 
     _, case_rows = pm._parse_cases(md)
@@ -536,7 +560,7 @@ def api_project_cases(pid: str) -> Any:
     try:
         quality = pm._step_quality(pdir, md, requirement_count=len(items), mode=_mode)
     except Exception as e:      # 打分失败不能让生成用例这个主操作失败
-        print(f"[质量分] 计算失败（不影响生成）：{e}")
+        log.warning("[质量分] 计算失败（不影响生成）：%s", e)
     try:
         pm._merge_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
                            lessons_injected=bool(injected.get("lessons")),
@@ -552,7 +576,7 @@ def api_project_cases(pid: str) -> Any:
                               "focus_rate": focus["rate"]}
                               if focus else {}))
     except Exception as e:
-        print(f"[run_meta] 写入失败（不影响生成）：{e}")
+        log.warning("[run_meta] 写入失败（不影响生成，但溯源信息会缺失）：%s", e)
 
     return jsonify({
         "ok": True,
@@ -587,8 +611,10 @@ def api_project_files_save(pid: str) -> Any:
             if not isinstance(loaded, dict) or "core_business" not in loaded:
                 return jsonify({"ok": False,
                                 "error": "regression.yaml 需包含顶层 core_business 列表"}), 400
-        except ImportError:
-            pass  # 无 PyYAML 时跳过语法校验（执行器本身也依赖它）
+        except ImportError as e:
+            # 必须出声：跳过校验 = 悄悄放松门禁 —— 一份语法坏掉的 YAML 会被存下来，
+            # 直到执行期才炸，且那时已经离"保存"这个动作很远了。
+            log.warning("[regression.yaml] 未安装 PyYAML，跳过语法校验：%s", e)
         except Exception as e:
             return jsonify({"ok": False, "error": f"YAML 语法错误：{e}"}), 400
 
@@ -667,7 +693,7 @@ def api_project_delete(pid: str) -> Any:
     try:
         run_store.delete_project(pid)
     except Exception as e:  # 留档清理失败不影响目录已删除的事实
-        print(f"[delete] 清理历史失败（已忽略）：{e}")
+        log.warning("[delete] 清理历史失败（目录已删，但 runs.db 里可能留下孤儿记录）：%s", e)
     return jsonify({"ok": True, "pid": pid})
 
 
@@ -714,7 +740,7 @@ def api_perf_security(pid: str) -> Any:
         try:
             v = int(body.get(key))
         except (TypeError, ValueError):
-            continue
+            continue  # 可忽略：非数值参数视作"未提供"，由 project.yaml 的配置兜底
         if v > 0:
             extra += [flag, str(v)]
     tid = _spawn_task("perf-security", pid, ["perf-security", pid], extra_args=extra)
@@ -902,7 +928,7 @@ def _parse_skill_md(path: Path) -> Dict[str, Any]:
             if vm:
                 version = vm.group(1).strip().strip('"').strip("'")
     except Exception:
-        pass
+        pass  # 可忽略：技能元信息仅供列表展示，解析失败退回默认名/空描述
     return {"name": name, "description": desc, "version": version}
 
 

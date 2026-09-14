@@ -2,6 +2,7 @@
 
 不依赖真实网络/真实 key：一律用 FakeRequests 模拟生成语言 API 的响应。
 """
+import logging
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,15 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
 import generate_cases as gc  # noqa: E402
+
+
+def _degraded_logged(caplog) -> bool:
+    """降级消息现在走**日志**（stderr + run_id），不再混在 stdout 里。
+
+    断言通道跟着迁移：原先查 `capsys.out` 是当时唯一的输出手段，不是设计意图。
+    查日志是更强的契约 —— 它同时隐含"级别够高（警告）"与"带 run_id 可检索"。
+    """
+    return any("降级" in r.getMessage() for r in caplog.records)
 
 
 class FakeResponse:
@@ -129,20 +139,21 @@ def test_generate_from_text_llm_success(monkeypatch):
     assert "登录" in out
 
 
-def test_generate_from_text_fallback_on_403(monkeypatch, capsys):
+def test_generate_from_text_fallback_on_403(monkeypatch, caplog):
     # 开启 LLM 但 Gemini 报 403 -> 自动降级到规则版，不抛异常
     monkeypatch.setattr(gc, "requests", make_fake([FakeResponse(403, text="forbidden")]))
-    out = gc.generate_from_text("1. 用户可登录", use_llm=True, api_key="dummy")
+    with caplog.at_level(logging.WARNING):
+        out = gc.generate_from_text("1. 用户可登录", use_llm=True, api_key="dummy")
     assert "| REQ-001-F |" in out  # 规则版产物
-    captured = capsys.readouterr().out
-    assert "降级" in captured  # 打印了降级日志
+    assert _degraded_logged(caplog)  # 降级**出声**（日志），不能悄悄降级
 
 
-def test_generate_from_text_fallback_on_429(monkeypatch, capsys):
+def test_generate_from_text_fallback_on_429(monkeypatch, caplog):
     monkeypatch.setattr(gc, "requests", make_fake([FakeResponse(429, headers={"retry-after": "0"}) for _ in range(3)]))
-    out = gc.generate_from_text("1. 用户可登录", use_llm=True, api_key="dummy")
+    with caplog.at_level(logging.WARNING):
+        out = gc.generate_from_text("1. 用户可登录", use_llm=True, api_key="dummy")
     assert "| REQ-001-F |" in out
-    assert "降级" in capsys.readouterr().out
+    assert _degraded_logged(caplog)
 
 
 # ---------------------------------------------------------------------------
@@ -339,14 +350,15 @@ def test_generate_from_text_agentic_uses_agentic_path(monkeypatch):
     assert "REQ-001-F" in out
 
 
-def test_generate_from_text_agentic_falls_back_on_error(monkeypatch, capsys):
+def test_generate_from_text_agentic_falls_back_on_error(monkeypatch, caplog):
     def boom(*a, **k):
         raise gc.LLMError("模拟编排失败")
 
     monkeypatch.setattr(gc, "agentic_generate", boom)
-    out = gc.generate_from_text("1. 用户可登录", use_llm=True, agentic=True)
+    with caplog.at_level(logging.WARNING):
+        out = gc.generate_from_text("1. 用户可登录", use_llm=True, agentic=True)
     assert "| REQ-001-F |" in out  # 已降级规则版
-    assert "降级" in capsys.readouterr().out
+    assert _degraded_logged(caplog)
 
 
 def test_default_timeout_env_override(monkeypatch):
