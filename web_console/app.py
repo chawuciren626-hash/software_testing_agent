@@ -477,6 +477,19 @@ def api_project_cases(pid: str) -> Any:
     except Exception as e:  # 生成失败不能把服务打挂
         return jsonify({"ok": False, "error": f"生成失败：{e}"}), 500
 
+    # 与 CLI `run` 同源：生成完也要校验"重点覆盖"。
+    # 不做的话控制台这条路径上的用例永远显示"未计分"，且覆盖率趋势会在这里断档。
+    focus: Optional[Dict[str, Any]] = None
+    try:
+        import lessons as ls  # noqa: E402  (同目录，已在 sys.path 中)
+        _f_items = ls.cluster_failures(
+            ls.extract_failures(run_store.list_snapshots(pid, limit=500)))
+        if _f_items:
+            focus = pm._step_focus(pdir, out, _f_items)
+    except Exception as e:      # 校验失败不能让生成用例这个主操作失败
+        print(f"[重点覆盖] 计算失败（不影响生成）：{e}")
+    md = out.read_text(encoding="utf-8")   # 回灌可能补了骨架行，后续一律以落盘内容为准
+
     _, case_rows = pm._parse_cases(md)
 
     # 与 CLI `run` 同源：生成用例就打分。
@@ -497,7 +510,12 @@ def api_project_cases(pid: str) -> Any:
                            provenance=prov,
                            requirements=len(items), cases=len(case_rows),
                            **({"quality": quality["total"]}
-                              if quality and quality.get("total") is not None else {}))
+                              if quality and quality.get("total") is not None else {}),
+                           **({"focus_total": focus["total"],
+                              "focus_native": focus["native"],
+                              "focus_backfilled": focus["backfilled"],
+                              "focus_rate": focus["rate"]}
+                              if focus else {}))
     except Exception as e:
         print(f"[run_meta] 写入失败（不影响生成）：{e}")
 
@@ -514,6 +532,7 @@ def api_project_cases(pid: str) -> Any:
         "degraded": bool((prov or {}).get("degraded")),
         "provenance": prov,
         "quality": quality,
+        "focus": focus,
     })
 
 

@@ -576,6 +576,36 @@ def _step_quality(pdir: Path, cases_md: Optional[str],
     return result
 
 
+def _step_focus(pdir: Path, cases_path: Path,
+                items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """情景记忆回灌闭环：校验本轮用例覆盖了多少"重点覆盖清单"，缺口补骨架并如实标注。
+
+    与结构质量分**两码事，不能互相替代**：
+      质量分看形式完整度（可注水：多写点套话就能刷高）
+      这里看历史易错点有没有被覆盖到（不可注水：覆盖就是覆盖，没覆盖就写出来）
+
+    产物：
+      - cases.md：缺失项补为【回灌】骨架用例 + 末尾「本轮未覆盖的历史易错点」章节
+      - artifacts/focus_history.jsonl：覆盖率趋势（验收口径：重复 run 不应下降）
+    """
+    if not items:
+        return None
+    sys.path.insert(0, str(ROOT / "extensions" / "memory"))
+    import focus as fc  # noqa: E402
+    cf = Path(cases_path)
+    md = cf.read_text(encoding="utf-8")
+    # apply_persistent：并入上轮补齐行 → 校验 → 补新缺口 → 存回去。
+    # 用带持久化的版本，覆盖才能跨轮累积（cases.md 每轮重生成，不存就白补）。
+    res = fc.apply_persistent(pdir, md, items)
+    cf.write_text(res.get("md") or md, encoding="utf-8")
+    fc.record_focus(pdir, res)
+    _d = fc.delta(fc.read_history(pdir))
+    _tail = "（首次）" if _d is None else ("（持平）" if _d == 0 else
+                                       (f"（环比 ↑{_d}）" if _d > 0 else f"（环比 ↓{abs(_d)}）"))
+    print(f"  [重点覆盖] {fc.to_summary(res)}{_tail} -> artifacts/{fc.FOCUS_FILE}")
+    return res
+
+
 def _read_quality(pdir: Path) -> Optional[Dict[str, Any]]:
     f = Path(pdir) / "artifacts" / QUALITY_FILE
     if not f.is_file():
@@ -1327,6 +1357,19 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
             _parts.append("注入历史易错点")
         if _rmeta.get("cases"):
             _parts.append(f"{_rmeta.get('cases')} 条用例")
+        # 重点覆盖：native 与 backfilled **分开展示** ——
+        # 只报"覆盖 5/5"会把"流水线补齐的"和"模型自发覆盖的"混为一谈。
+        if _rmeta.get("focus_total"):
+            _fn = _rmeta.get("focus_native", 0)
+            _fp = _rmeta.get("focus_persisted", 0)
+            _fb = _rmeta.get("focus_backfilled", 0)
+            _tail = []
+            if _fp:
+                _tail.append(f"{_fp} 条沿用上轮")
+            if _fb:
+                _tail.append(f"{_fb} 条本轮补齐")
+            _parts.append(f"重点覆盖 {_fn}/{_rmeta.get('focus_total')}（生成即覆盖）"
+                          + (f"[{'/'.join(_tail)}]" if _tail else ""))
         # 降级必须显式标红：这批用例看着"生成好了"，其实是模板占位，
         # 不标出来就会被当成 LLM 质量的产物直接拿去评审/执行。
         _degraded = bool(_pv.get("degraded") or _rmeta.get("degraded"))
@@ -1630,6 +1673,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     cases = _step_requirements(args.id, pdir, use_llm=use_llm,
                               agentic=use_agentic, extra_context=inject,
                               injected={"lessons": _lcount, "knowledge": len(kpicked)})
+
+    # 情景记忆回灌闭环（Phase 2）：**注入之后必须校验**。
+    # 只注入不校验 = 把"提示词发出去了"当成"结果达成了"，这是假绿的另一种形态：
+    # 模型没采纳、或清单项与本次需求无关时，流水线照样打印"已注入历史易错点"。
+    # 校验发现缺口就补成骨架用例，但**如实标注是回灌补齐的**，不冒充生成时自发覆盖。
+    _focus: Optional[Dict[str, Any]] = None
+    try:
+        _f_items = ls.cluster_failures(
+            ls.extract_failures(run_store.list_snapshots(args.id, limit=500)))
+        if cases and Path(cases).is_file() and _f_items:
+            _focus = _step_focus(pdir, Path(cases), _f_items)
+    except Exception as e:      # 校验失败不能中断流水线
+        print(f"  [重点覆盖] 跳过（{e}）")
     # 记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数
     _mode = "智能体多步自审编排" if (use_llm and use_agentic) else ("LLM 增强" if use_llm else "规则版")
     _case_count = 0
@@ -1660,16 +1716,25 @@ def cmd_run(args: argparse.Namespace) -> None:
             _pv = None
     _degraded = bool((_pv or {}).get("degraded"))
 
+    _focus_fields: Dict[str, Any] = {}
+    if _focus:
+        # 分开记：native（生成即覆盖）与 backfilled（回灌补齐）不能合并成一个"覆盖率"——
+        # 合并之后"补出来的覆盖"会和"模型真学会了"长得一样。
+        _focus_fields = {"focus_total": _focus.get("total"),
+                         "focus_native": _focus.get("native"),
+                         "focus_persisted": _focus.get("persisted"),
+                         "focus_backfilled": _focus.get("backfilled"),
+                         "focus_rate": _focus.get("rate")}
     _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
                     lessons_injected=bool(ls_injected),
                     knowledge_injected=bool(kinject),
                     requirements=_req_count, cases=_case_count,
-                    degraded=_degraded, provenance=_pv)
+                    degraded=_degraded, provenance=_pv, **_focus_fields)
     _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
                         lessons_injected=bool(ls_injected),
                         knowledge_injected=bool(kinject),
                         requirements=_req_count, cases=_case_count,
-                        degraded=_degraded, provenance=_pv)
+                        degraded=_degraded, provenance=_pv, **_focus_fields)
 
     # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），
     # 落盘后供报告/看板/控制台读。默认**只展示与看趋势、不做门禁**；
