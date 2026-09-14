@@ -95,6 +95,7 @@ software_testing_agent/
 ├── software_testing_agent.py     # 无 LLM 的轻量流水线入口
 ├── run_console.py                # 本地起控制台（前台 / --detach 后台常驻）
 ├── extensions/                   # 本仓库新增的能力模块
+│   ├── common/                   # 跨扩展的**唯一实现层**：yamlio/auth/data/gates/cases + obs（日志与 run_id）
 │   ├── api_testing/              # ① 接口自动化（pytest + requests，可独立运行）
 │   ├── requirements_to_cases/    # ② 需求→用例 + 结构质量分（case_quality）+ 生成溯源（provenance）
 │   ├── reporting/                # ③ 报告：HTML、门禁摘要、缺陷草稿、新旧对比、钉钉/邮件
@@ -524,6 +525,12 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 6 | **算不出就不猜** | 无法判定的维度记「未计分」并说明，总分按剩余维度归一化，不填 0 也不填 100 |
 | 7 | **不自动替人做决定** | 不自动提单、级别只是建议、门禁阈值默认不卡——把判断权留给人 |
 | 8 | **测试不能污染工作区** | 测试产物落临时目录；靠"事后 `git checkout` 还原"= 失败静默 + 偶发假红 |
+| 9 | **出错必出声**：诊断走日志、结果走 stdout | 静默 `except` 与裸 `print` 让"红了却定位不到"反复发生。诊断进 stderr + 日志文件（带 `run_id` 可跨进程串起同一次运行），**呈现类输出**留在 stdout 以便 `\|` 管道接走 |
+| 10 | **一次运行一条线（run_id）** | 控制台任务用 `tid` 作 run_id，经 `STA_RUN_ID` 传给子进程；日志每行带它，跨进程可检索。守护见 `tests/test_obs.py` |
+
+> 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
+> 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，
+> 是约定而非疏漏；但 `print(..., file=sys.stderr)` 与 `except` 块内的 `print` 已被测试禁掉。
 
 ---
 

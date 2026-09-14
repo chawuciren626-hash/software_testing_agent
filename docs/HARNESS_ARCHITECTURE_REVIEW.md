@@ -238,6 +238,34 @@
 
 **建议**（不追求一次到位）：① 引入 `logging` + `run_id`（控制台已有 `tid`，CLI 侧生成短 id）贯穿 CLI/Web/扩展；② 把静默 `except` 分成两类——"可忽略"记 debug，"必须出声"记 warning/error。**你们已经有一套成熟的"必须出声"哲学**（配置问题单列、降级要出声、环境不可达要交代名单），只需把它落到日志层，**这是你们已有的判断力在基础设施上的兑现**。
 
+> **落地状态（2026-09-14，已完成）**：新增 `extensions/common/obs.py`（唯一实现层）——
+> `setup()`（幂等，stderr + 可选文件 handler，级别由 `STA_LOG_LEVEL` 控制）、`get_logger()`、
+> `new_run_id()`、`set_run_id()`/`get_run_id()`（`ContextVar`）、`RunIdFilter`（把 run_id 注入每条记录）。
+> 三入口接入：`project_manager.main()`（`adopt_env_run_id("cli")` + 未捕获异常出声）、
+> `web_console/app.py`（任务 tid 即 run_id）、`run_console.py`。**run_id 跨进程贯通**：控制台把
+> `STA_RUN_ID=<tid>` 注入子进程 env；工作线程内显式 `set_run_id(tid)`（ContextVar 不跨线程继承）。
+>
+> **一条刻意确立的边界**：`print` 并未被全面禁止 —— **"给人看的结果呈现"**（`list` 的表格、
+> `defects` 的 Markdown、`--json` 载荷）留在 stdout 是**产品行为**（要能被 `|` 管道接走）；
+> **日志负责"排障用的诊断"**（进度、判定、降级、异常），走 stderr + 可选文件。二者是**两种受众**，
+> 不是二选一。这条边界写进了 `tests/test_obs.py` 的 docstring，是决定而不是遗漏。
+>
+> **量化结果**（AST 盘点，A 世界 = `project_manager` / `extensions/**` / `web_console/**`）：
+> - `print(..., file=sys.stderr)`：**15 → 0**；
+> - `except` 块内 `print(`：**24 → 0**；
+> - 静默 `except`（体只有 `pass`/`continue`/`return`）：**26 → 0**（全部带分类注释，其中 11 处改为真正 `log.warning`/`log.error`）；
+> - 其中 **"必须出声"的典型**：Web 失败截图/复现脚本写不出、清不掉上次证据、知识库或 lessons 注入失败、
+>   `regression.json` 读坏、LLM 降级、钉钉通知失败、跳过 YAML 语法校验（**静默放松门禁**）。
+> - 守护测试 `tests/test_obs.py`（13 例，已进 CI 硬门禁白名单）：R1 无 stderr print / R2 无 except 内 print /
+>   R3 每个静默 except 有 log 或分类注释 / run_id 注入记录 / setup 幂等 / 跨进程贯通（静态断言）。
+>   变异验证 5 项：R1、R2、R3 各打一枪**各自精确变红并报出位置**；拆掉控制台 `set_run_id` → 贯通断言红；
+>   让 `RunIdFilter` 空转 → run_id 注入断言红（连带格式化用例也红，说明该环节是**承重**的）。
+> - ⚠️ **守护测试当场抓到的一个真实设计弱点**：`new_run_id` 原用 4 位 hex，同一秒生成 200 个 **约 1/4 概率相撞** ——
+>   唯一性不该交给概率。已改为"时间+随机负责跨进程、进程内自增序号负责同进程绝不重复"。
+> - **未覆盖（如实标注）**：`run_regression` / `run_web` / `run_perf_security` 的**进度类** `print`
+>   （合计 46 处）未迁移——它们是 CLI 进度反馈，排障价值低于本轮目标；以及 B 世界
+>   （`src/agentic_explorer`）的 print 与静默 except 未纳入（属 §7 序 5）。
+
 ### 4.3 L 层补最小的确定性拦截 **【已复核：`auth.py` 白名单 / 默认关】**
 
 现状取舍（本机单人 → 默认为关）**是合理的**，我不建议改成强制鉴权。但可以低成本加三件：
@@ -291,7 +319,7 @@
 |---|---|---|---|
 | 1 | ✅ 修快照重复（§3.1）**（2026-09-14 已完成）** | **信号污染会污染所有下游判断**——先让仪表盘可信，再谈改进 | 新增守护测试：单任务快照增量 ≤ 1；`lessons` 失败次数不再翻倍 → `tests/test_console_snapshot_dedupe.py`（6 例 + 变异验证），已接入 CI 硬门禁白名单 |
 | 2 | ✅ 抽 `extensions/common/`（§4.1）**（2026-09-14 已完成）** | 低风险、立刻兑现"口径唯一"；为后续重构铺路 | `tests/test_common_parity.py`（23 例）：身份 `is` 同一对象 + AST `def` 定义数各为 1 + 同输入逐字段相等；已接入 CI 硬门禁白名单。变异验证 2 项通过 |
-| 3 | 引入 `logging` + `run_id`（§4.2） | 没有它，后面每一步的排障成本都在重复支付 | 关键路径无裸 `print`；静默 `except` 数量下降且**每处都有分类注释** |
+| 3 | ✅ 引入 `logging` + `run_id`（§4.2）**（2026-09-14 已完成）** | 没有它，后面每一步的排障成本都在重复支付 | 诊断路径无裸 `print`（stderr **15→0**、except 内 **24→0**）；静默 `except` **26→0** 且**每处都有分类注释**。守护测试 `tests/test_obs.py`（13 例，已进 CI 硬门禁白名单）+ 5 项变异验证。逐项证据见 §4.2 落地状态 |
 | 4 | L 层最小拦截 + 审计（§4.3） | 团队化前的最低安全垫 | 删除操作有审计行；只读模式可用；有对应测试 |
 | 5 | 基座循环补护栏（§3.2） | **S1 的前置条件**，不是 S1 的一部分 | 硬 `max_turns` 生效；结束原因为枚举；目标达成由程序判定 |
 | 6 | S1 独立入口接入（§3.3） | 前 5 步做完，接线才是"加能力"而不是"引进风险" | 无 key / 超时 / 异常任一情况下降级规则版且**降级原因出声** |
