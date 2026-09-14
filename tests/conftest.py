@@ -3,7 +3,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（tests/ 的上级）
-for sub in ("", "web_console", "extensions/regression", "extensions/perf_security",
+for sub in ("", "web_console", "extensions", "extensions/regression", "extensions/perf_security",
            "extensions/web_testing", "extensions/requirements_to_cases",
            "extensions/reporting", "tests/eval"):
     p = os.path.join(ROOT, sub)

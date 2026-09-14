@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -181,26 +182,13 @@ def apply(cases_md: str, items: Sequence[Dict[str, Any]],
 # --------------------------------------------------------------------------- #
 # 内部：Markdown 表格操作（只依赖格式，不依赖生成器实现）
 # --------------------------------------------------------------------------- #
-def _parse_rows(md: str) -> List[Dict[str, str]]:
-    """从 cases.md 解析用例行（本地最小实现，避免反向依赖 project_manager）。"""
-    lines = (md or "").splitlines()
-    start = -1
-    for i, ln in enumerate(lines):
-        if ln.startswith("|") and "---" in ln:
-            start = i - 1
-            break
-    if start < 0:
-        return []
-    headers = [h.strip() for h in lines[start].split("|")[1:-1] if h.strip()]
-    out: List[Dict[str, str]] = []
-    for ln in lines[start + 2:]:
-        if not ln.strip() or not ln.startswith("|"):
-            break            # 表格结束（遇到空行/非表格行即停）
-        cells = [c.strip() for c in ln.split("|")[1:-1]]
-        if len(cells) < len(headers):
-            cells += [""] * (len(headers) - len(cells))
-        out.append(dict(zip(headers, cells)))
-    return out
+# 表格行解析收敛到 extensions/common/cases.parse_rows（唯一定义处）——
+# 不再"本地最小实现"，避免与 project_manager / case_quality 各自跑偏。
+# 保留 `_parse_rows` 名字作为别名，兼容既有内部调用与测试。
+_EXTENSIONS_DIR = Path(__file__).resolve().parents[1]      # extensions/
+if str(_EXTENSIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXTENSIONS_DIR))
+from common.cases import parse_rows as _parse_rows         # noqa: E402
 
 
 def _append_rows(md: str, rows: Sequence[str]) -> str:

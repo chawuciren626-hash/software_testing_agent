@@ -55,6 +55,7 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest \
+            tests/test_common_parity.py \
             tests/test_project_manager_units.py \
             tests/test_regression_gate.py \
             tests/test_perf_security.py \

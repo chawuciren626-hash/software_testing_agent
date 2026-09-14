@@ -43,6 +43,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -93,32 +94,13 @@ _SPECIAL = re.compile(r"null|None|空字符串|为空|空白|负数|超长|超�
 # ---------------------------------------------------------------- 解析
 
 
-def parse_rows(md_text: str) -> List[Dict[str, str]]:
-    """从 cases.md 抽出表格行（与 `project_manager._parse_cases` 同格式）。
-
-    这里**不直接复用** project_manager 的实现：本模块要能被 `tests/eval` 与
-    独立 CLI 使用，不该反向依赖命令行入口。
-    """
-    rows: List[Dict[str, str]] = []
-    if not md_text:
-        return rows
-    lines = md_text.splitlines()
-    start = -1
-    for i, line in enumerate(lines):
-        if line.startswith("|") and "---" in line:
-            start = i - 1
-            break
-    if start < 0:
-        return rows
-    headers = [h.strip() for h in lines[start].split("|")[1:-1]]
-    for line in lines[start + 2:]:
-        if not line.strip().startswith("|"):
-            continue
-        cells = [c.strip() for c in line.split("|")[1:-1]]
-        if len(cells) < min(2, len(headers)):
-            continue
-        rows.append(dict(zip(headers, cells)))
-    return rows
+# 表格行解析收敛到 extensions/common/cases.parse_rows（唯一定义处）——
+# 直接复用共享实现，不反向依赖 project_manager，也不再维护本地副本。
+# 保留 `parse_rows` 名字作为别名，兼容既有调用与 tests/test_case_quality.py。
+_EXTENSIONS_DIR = Path(__file__).resolve().parents[1]      # extensions/
+if str(_EXTENSIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXTENSIONS_DIR))
+from common.cases import parse_rows                        # noqa: E402
 
 
 def _req_of(row: Dict[str, str]) -> Optional[int]:

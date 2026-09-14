@@ -47,52 +47,23 @@ except ImportError:  # pragma: no cover
     requests = None
 
 
-def _load_yaml(path: Path) -> Dict[str, Any]:
-    if yaml is None:
-        raise RuntimeError("需要 PyYAML，请先安装依赖：pip install pyyaml")
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
-
-def load_dotenv() -> Optional[Path]:
-    """载入仓库根 .env（密钥分离：只有此文件里有真实口令，且已被 gitignore）。
-
-    ⚠ 为什么必须显式提供：本模块既被 project_manager 调用（它启动时已载入 .env），
-    也会被**独立运行**（`python run_regression.py --project ...`）或从别的扩展调用。
-    后两种情况下如果没人载入 .env，`_resolve_auth` 取到的是空口令，
-    登录必然失败 → 受保护接口全部 401 → 表现为"回归大面积失败"，
-    极难排查（实际只是凭据没加载）。因此独立入口必须先调用本函数。
-    用 setdefault 语义：不覆盖已存在的环境变量，CI 里显式注入的值优先。
-    """
-    roots = []
-    if os.environ.get("STA_ROOT"):
-        roots.append(Path(os.environ["STA_ROOT"]))
-    roots.append(Path(__file__).resolve().parents[2])   # extensions/regression/x.py -> 仓库根
-    for root in roots:
-        p = root / ".env"
-        if not p.is_file():
-            continue
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-        return p
-    return None
-
-
-def _resolve_auth(project: Dict[str, Any]) -> Dict[str, Any]:
-    """从 project.yaml 解析认证上下文；口令/token 取自环境变量（密钥分离）。"""
-    env = project.get("env", {}) or {}
-    auth = env.get("auth", {}) or {}
-    return {
-        "type": auth.get("type", "none"),
-        "login_url": auth.get("login_url", ""),
-        "token_field": auth.get("token_field", "token"),
-        "username": os.getenv(auth["username_env"], "") if auth.get("username_env") else "",
-        "password": os.getenv(auth["password_env"], "") if auth.get("password_env") else "",
-        "token": os.getenv(auth["token_env"], "") if auth.get("token_env") else "",
-    }
+# ---------------------------------------------------------------------------
+# 共享实现层（唯一定义处）
+# ---------------------------------------------------------------------------
+# 读 YAML / 认证解析 / .env 加载 / 占位替换 / 点路径取值，曾在本模块与
+# run_web / run_perf_security / project_manager 里**各自复刻**。现统一委托给
+# extensions/common（口径唯一）。保留同名别名，兼容既有 `import run_regression as rr`。
+# 依据：docs/HARNESS_ARCHITECTURE_REVIEW.md §4.1。
+#
+# ⚠ 独立运行（python run_regression.py ...）时仍须先调用 `load_dotenv()`：
+# 否则凭据为空 → 登录失败 → 受保护接口全 401 → 表现为"回归大面积失败"，极难排查。
+_EXTENSIONS_DIR = Path(__file__).resolve().parents[1]                 # extensions/
+if str(_EXTENSIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXTENSIONS_DIR))
+from common.yamlio import load_yaml as _load_yaml                       # noqa: E402
+from common.auth import load_dotenv, resolve_auth as _resolve_auth      # noqa: E402
+from common.data import substitute as _substitute, dig as _dig          # noqa: E402
+from common.gates import all_pass as _all_pass                          # noqa: E402
 
 
 def _login(base_url: str, auth: Dict[str, Any]) -> Optional[str]:
@@ -120,26 +91,8 @@ def _login(base_url: str, auth: Dict[str, Any]) -> Optional[str]:
     return token
 
 
-def _substitute(body: Any, auth: Dict[str, Any]) -> Any:
-    """把 {{username}} / {{password}} 占位替换为凭据。"""
-    if isinstance(body, str):
-        return body.replace("{{username}}", auth["username"]).replace("{{password}}", auth["password"])
-    if isinstance(body, dict):
-        return {k: _substitute(v, auth) for k, v in body.items()}
-    if isinstance(body, list):
-        return [_substitute(v, auth) for v in body]
-    return body
-
-
-def _dig(data: Any, dotted: str) -> Any:
-    """按点路径取嵌套字段，如 data.token -> json['data']['token']。"""
-    cur = data
-    for part in dotted.split("."):
-        if isinstance(cur, dict):
-            cur = cur.get(part)
-        else:
-            return None
-    return cur
+# _substitute / _dig 已上移到 extensions/common/data.py（唯一定义处），
+# 本模块通过上方 import 引入同名别名。
 
 
 PYTEST_SUMMARY_RE = re.compile(r"(\d+)\s+(passed|failed|error|skipped)")
@@ -324,7 +277,7 @@ def run_regression(
         "skipped": skipped,
         # 回归门禁：无 FAIL 且【确有实际执行】才算通过。
         # 全 SKIP（环境不可达）不判绿，避免 CI 给出虚假的安全信号。
-        "all_pass": failed == 0 and passed > 0,
+        "all_pass": _all_pass(failed, passed),
         "results": results,
     }
     if out_json:
@@ -385,7 +338,7 @@ def rerun_one(
     merged["results"] = results
     merged["total"], merged["passed"] = len(results), passed
     merged["failed"], merged["skipped"] = failed, skipped
-    merged["all_pass"] = failed == 0 and passed > 0   # 全 SKIP 不判绿（防假绿）
+    merged["all_pass"] = _all_pass(failed, passed)    # 全 SKIP 不判绿（防假绿）
     merged["last_rerun"] = {"name": name, "result": new_rec.get("result"),
                             "at": new_rec["rerun_at"]}
 

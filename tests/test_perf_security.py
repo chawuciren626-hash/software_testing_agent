@@ -499,9 +499,15 @@ def test_run_all_partial_rerun_keeps_previous_section(good_server, tmp_path, stu
 
 
 def test_load_dotenv_does_not_override_existing(monkeypatch, tmp_path):
+    """.env 载入用 setdefault 语义（已存在的不覆盖），并认 STA_ROOT。
+
+    实现已收敛到 extensions/common/auth.load_dotenv（唯一定义处，见
+    docs/HARNESS_ARCHITECTURE_REVIEW.md §4.1）；本用例守的是"语义"，
+    不再绑定某个模块内的兜底函数名（ps._load_dotenv 即共享实现）。
+    """
     (tmp_path / ".env").write_text("STUB_USER=from_env\nSTUB_PWD=pw\n", encoding="utf-8")
     monkeypatch.setenv("STA_ROOT", str(tmp_path))
     monkeypatch.setenv("STUB_USER", "preset")
-    ps._fallback_load_dotenv()
+    ps._load_dotenv()
     assert os.environ["STUB_USER"] == "preset"       # 已存在的不覆盖
     assert os.environ["STUB_PWD"] == "pw"            # 缺失的补上

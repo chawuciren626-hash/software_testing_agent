@@ -57,71 +57,21 @@ except ImportError:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# 复用核心回归的 YAML / 认证 / 占位替换 / 点路径取值（同源，不重复实现）
+# 共享实现层（唯一定义处）
 # ---------------------------------------------------------------------------
-_REGRESSION_DIR = Path(__file__).resolve().parent.parent / "regression"
-if str(_REGRESSION_DIR) not in sys.path:
-    sys.path.insert(0, str(_REGRESSION_DIR))
-try:
-    import run_regression as rr  # noqa: E402
-    _load_yaml = rr._load_yaml
-    _resolve_auth = rr._resolve_auth
-    _substitute = rr._substitute
-    _dig = rr._dig
-except Exception:  # pragma: no cover - 独立运行时兜底
-    rr = None  # type: ignore
-
-    def _load_yaml(path: Path) -> Dict[str, Any]:  # type: ignore
-        import yaml
-        return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
-
-    def _resolve_auth(project: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore
-        auth = ((project.get("env", {}) or {}).get("auth", {}) or {})
-        return {
-            "type": auth.get("type", "none"),
-            "login_url": auth.get("login_url", ""),
-            "token_field": auth.get("token_field", "token"),
-            "username": os.getenv(auth["username_env"], "") if auth.get("username_env") else "",
-            "password": os.getenv(auth["password_env"], "") if auth.get("password_env") else "",
-            "token": os.getenv(auth["token_env"], "") if auth.get("token_env") else "",
-        }
-
-    def _substitute(body: Any, auth: Dict[str, Any]) -> Any:  # type: ignore
-        if isinstance(body, str):
-            return body.replace("{{username}}", auth["username"]).replace("{{password}}", auth["password"])
-        if isinstance(body, dict):
-            return {k: _substitute(v, auth) for k, v in body.items()}
-        if isinstance(body, list):
-            return [_substitute(v, auth) for v in body]
-        return body
-
-    def _dig(data: Any, dotted: str) -> Any:  # type: ignore
-        cur = data
-        for part in dotted.split("."):
-            cur = cur.get(part) if isinstance(cur, dict) else None
-        return cur
-
-
-def _fallback_load_dotenv() -> Optional[Path]:
-    """极简 .env 加载（当 run_regression 未提供 load_dotenv 时兜底）。"""
-    root = Path(os.environ.get("STA_ROOT") or Path(__file__).resolve().parents[2])
-    p = root / ".env"
-    if not p.is_file():
-        return None
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-    return p
-
-
-# 密钥分离：真实口令只在 .env（gitignore）。独立运行本模块时必须自行加载，
-# 否则凭据为空 → 登录失败 → 受保护接口全部 401 → 表现为"性能/安全大面积失败"。
-_load_dotenv = getattr(rr, "load_dotenv", None) if rr is not None else None
-if _load_dotenv is None:  # pragma: no cover
-    _load_dotenv = _fallback_load_dotenv
+# 读 YAML / 认证解析 / 占位替换 / 点路径取值 / .env 加载统一委托给 extensions/common
+# （不再与 run_regression「同源靠约定」，而是同一个函数对象）。
+# 见 docs/HARNESS_ARCHITECTURE_REVIEW.md §4.1。
+#
+# ⚠ 密钥分离：真实口令只在 .env（gitignore）。独立运行本模块时必须先调用
+# _load_dotenv()，否则凭据为空 → 登录失败 → 受保护接口全 401 → 表现为"性能/安全大面积失败"。
+_EXTENSIONS_DIR = Path(__file__).resolve().parent.parent              # extensions/
+if str(_EXTENSIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(_EXTENSIONS_DIR))
+from common.yamlio import load_yaml as _load_yaml                     # noqa: E402
+from common.auth import resolve_auth as _resolve_auth                 # noqa: E402
+from common.auth import load_dotenv as _load_dotenv                   # noqa: E402
+from common.data import substitute as _substitute, dig as _dig        # noqa: E402
 
 
 DEFAULT_TIMEOUT = 10

@@ -49,6 +49,22 @@ ROOT = Path(os.environ.get("STA_ROOT") or Path(__file__).resolve().parent)
 PROJECTS_DIR = ROOT / "projects"
 
 
+def _common(mod: str):
+    """取用 `extensions/common` 下的共享实现模块（跨扩展的**唯一定义处**）。
+
+    读 YAML / 认证解析 / .env 加载 / cases.md 行解析曾在多个模块里各自复刻，
+    现统一收敛到 extensions/common（见 docs/HARNESS_ARCHITECTURE_REVIEW.md §4.1）。
+
+    惰性引入：把 extensions/ 加入 sys.path 后再 import，避免在模块顶层引入
+    可选依赖；这也是本文件既有的风格（用到时才把目录塞进 sys.path）。
+    """
+    import importlib
+    ext = str(ROOT / "extensions")
+    if ext not in sys.path:
+        sys.path.insert(0, ext)
+    return importlib.import_module(f"common.{mod}")
+
+
 def python_exe() -> str:
     """用于起子进程的 Python 解释器。
 
@@ -67,21 +83,13 @@ TODAY = datetime.date.today().isoformat()
 
 
 def _load_dotenv(env_file: Path | None = None) -> None:
-    """极简 .env 加载（零依赖）。
+    """载入 .env（密钥分离）——实现收敛到 `extensions/common/auth.load_dotenv`。
 
-    密钥分离约定：project.yaml 只存环境变量【名】，真实口令/token 写在本项目的
-    .env（已被 .gitignore 忽略，不入库）。本函数把 .env 读入 os.environ，
+    project.yaml 只存环境变量【名】，真实口令/token 写在本项目 .env
+    （已被 .gitignore 忽略，不入库）。本函数把 .env 读入 os.environ，
     供回归执行器按变量名取值。
     """
-    p = env_file or (ROOT / ".env")
-    if not p.is_file():
-        return
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    _common("auth").load_dotenv(env_file)
 
 
 # ----------------------------------------------------------------------------
@@ -286,10 +294,9 @@ def load_project(pid: str) -> Dict[str, Any]:
     if not py.is_file():
         raise SystemExit(f"未找到项目 {pid}（{py} 不存在）。先运行 create。")
     try:
-        import yaml
-    except ImportError:
-        raise SystemExit("需要 PyYAML：pip install pyyaml")
-    return yaml.safe_load(py.read_text(encoding="utf-8")) or {}
+        return _common("yamlio").load_yaml(py)      # 唯一定义处，见 extensions/common
+    except RuntimeError as e:                        # 未安装 PyYAML
+        raise SystemExit(str(e))
 
 
 # ----------------------------------------------------------------------------
@@ -684,24 +691,8 @@ def _parse_cases(md_text: str) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
             except ValueError:
                 pass
 
-    table_start = -1
-    for i, line in enumerate(lines):
-        if line.startswith("|") and "---" in line:
-            table_start = i - 1
-            break
-    if table_start < 0:
-        return meta, []
-
-    headers = [h.strip() for h in lines[table_start].split("|")[1:-1] if h.strip()]
-    rows: List[Dict[str, str]] = []
-    for line in lines[table_start + 2:]:
-        if not line.strip() or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.split("|")[1:-1]]
-        if len(cells) < max(2, len(headers)):
-            continue
-        rows.append(dict(zip(headers, cells)))
-    return meta, rows
+    # 表格行解析收敛到 extensions/common/cases.parse_rows（唯一定义处）。
+    return meta, _common("cases").parse_rows(md_text)
 
 
 def _cases_html(md_text: str) -> Tuple[str, int]:
