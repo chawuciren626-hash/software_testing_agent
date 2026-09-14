@@ -553,6 +553,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 11 | **能改状态的动作必须留痕、且能被一键禁掉** | 控制台一旦暴露到局域网，"谁都点得动、出事了查不到"就是两个缺口。所以：`/api/*` 的写操作各留一行 `audit.jsonl`（谁/何时/哪个项目/结果，**被拦下的尝试也留痕**）；`STA_CONSOLE_READONLY=1` 一键切成只读（写 403、读放行、登录不受影响）。守护见 `tests/test_console_guard.py` |
 | 12 | **对被测系统不信任，对自己也不信任** | 我们要求"HTTP 4xx/5xx 一律 FAIL、环境不可达绝不判绿"，却曾把"停不停/成没成"交给 agent 自评 —— 同一个团队两套尺度。所以探索循环必须有**硬**资源上限（`AGENT_MAX_TURNS` / `AGENT_TOKEN_BUDGET`，到顶即止且不再问模型）、结束原因**枚举化**（含 `max-turns` / `budget-exhausted`）、"达成"由**程序**按确定性断言判定（判不了记 `unknown`，**算不出就不猜**）。守护见 `tests/test_guardrails.py` |
 | 13 | **降级要出声，且"未执行"绝不渲染成绿灯** | 接进来的智能体能力只要"跑不动就悄悄跳过"，整套防假绿体系就在最不确定的一环破功。所以：① 不可用要**降级**（不是失败）并写明**枚举化原因**（缺 key / 超时 / 异常 / 未配置）；② 契约里只有显式 `status == "ok"` 才算"跑了"，缺字段一律不算；③ 消费侧**跑前清旧产物**（否则崩溃会被上一轮成功伪装成本轮）；④ 报告与 `run_meta` 照实写"已降级 + 原因"，退出码区分「未执行(3)」与「失败(1)」。守护见 `tests/test_agentic_contract.py` / `test_agentic_entry.py` / `test_agentic_wiring.py` |
+| 14 | **阶段顺序靠显式依赖，不靠书写位置** | 流水线里"`diff` 必须在 `snapshot` 之前"这类约束，一旦只靠**代码顺序 + 注释**维持，任何一次"顺手调个位置"都会静默破坏它 —— 结论永远变成"没有新增失败"，且**没有任何测试会红**。所以阶段顺序收敛成注册表（`name` / `requires` / `run`，`extensions/common/pipeline.py`），按**稳定拓扑排序**执行：改顺序 = 改 `requires`，依赖不满足**当场报错**（成环也报错并点名阶段）；等价性断言（解析顺序 == 重构前真实顺序）钉住"重构没有偷偷改行为"。守护见 `tests/test_pipeline_registry.py` |
 
 > 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
 > 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，
@@ -587,7 +588,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 用例结构质量分、缺陷草稿、失败新旧对比、生成溯源 | ✅ 完成 |
 | 可视化控制台（8 页）与访问鉴权 | ✅ 完成 |
 | CI 首次全绿（2026-09-12），三态门禁 + 失败注解可观测 | ✅ 完成 |
-| S1：把基座 Supervisor 编排接为 `run` 的可选阶段（需 LLM key） | ⏳ 待办 |
+| S1：把基座 Supervisor 编排接为 `run` 的可选阶段（需 LLM key） | ✅ 完成（**独立入口 + 子进程**接入，`--explore`；可降级、降级出声。见 §4.10 ⑥ 与审阅报告 §3.3） |
 | S2：需求 → 用例默认走 LLM（规则版作降级，需 key，且需 CI 无 key 时仍走规则版） | ⏳ 待办 |
 
 详见 [`docs/AGENT_REVIEW_AND_ROADMAP.md`](docs/AGENT_REVIEW_AND_ROADMAP.md)。

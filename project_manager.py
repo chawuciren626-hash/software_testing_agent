@@ -40,6 +40,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,6 +57,9 @@ _EXTENSIONS_DIR = str(ROOT / "extensions")
 if _EXTENSIONS_DIR not in sys.path:
     sys.path.insert(0, _EXTENSIONS_DIR)
 from common.obs import get_logger, adopt_env_run_id, RUN_ID_ENV          # noqa: E402
+# 阶段注册表 + 依赖拓扑执行：把"阶段顺序"里的隐式约束（diff 必须在 snapshot 之前）
+# 变成显式 requires。见 docs/HARNESS_ARCHITECTURE_REVIEW.md §4.4 / §7 序 7。
+from common.pipeline import Stage, resolve_order, run_stages            # noqa: E402
 
 log = get_logger("project_manager")
 
@@ -1827,6 +1831,325 @@ def _load_run_store():
     return mod
 
 
+# ----------------------------------------------------------------------------
+# 全流程 run / 核心回归的**阶段实现**与**阶段注册表**（审阅报告 §4.4 / §7 序 7）
+#
+# 这些 `_stage_*` 原先是 cmd_run / cmd_regression 里的顺序调用，现按"一阶段一函数"
+# 抽出：阶段之间不再靠"局部变量作用域"隐式传值，而经 `_RunCtx` 显式传递产出；
+# 顺序也不再靠书写位置，而由注册表里的 `requires` 声明、经稳定拓扑排序解析出来。
+#
+# ★ 唯一一条"顺序错了会静默出错"的强约束：`diff` 必须在 `snapshot` 之前 ——
+#   否则历史里最新一条就是本次自己，自己跟自己比，结论永远是"没有新增失败"。
+#   它现在写在 `_run_stages()` / `_regression_stages()` 的 `snapshot.requires` 上，
+#   由 `tests/test_pipeline_registry.py` 的等价性守卫守住。
+# ----------------------------------------------------------------------------
+@dataclass
+class _RunCtx:
+    """阶段之间共享的上下文。
+
+    字段的**读写**即阶段间的数据依赖（谁产出、谁消费），与 `requires` 声明的
+    顺序依赖相互印证：顺序若被调换导致字段未就绪，会立刻在运行期暴露，
+    而不是悄悄用到上一次的旧值。
+    """
+    args: Any
+    pid: str
+    pdir: Path
+    base_url: str
+    run_store: Any
+    lessons: Any                            # extensions/memory/lessons 模块
+    use_llm: bool = False
+    use_agentic: bool = False
+    inject_text: str = ""                   # 两类记忆合成后的注入文本
+    lessons_count: int = 0                  # 注入的易错点条数（溯源用）
+    lessons_injected: bool = False
+    knowledge_injected: bool = False
+    knowledge_picked: List[Dict[str, Any]] = field(default_factory=list)
+    snapshot_trigger: str = "run"           # 快照来源标记（run / regression）
+    # ---- 阶段产出 ----
+    cases: Optional[Path] = None
+    reg: Dict[str, Any] = field(default_factory=dict)
+    focus: Optional[Dict[str, Any]] = None
+    diff_payload: Optional[Dict[str, Any]] = None
+    meta_fields: Dict[str, Any] = field(default_factory=dict)
+    mode: str = "规则版"
+    req_count: int = 0
+    case_count: int = 0
+    provenance: Optional[Dict[str, Any]] = None
+    degraded: bool = False
+    qfail: Optional[Tuple[Any, int, str]] = None
+
+
+def _stage_requirements(ctx: _RunCtx) -> None:
+    """① 需求 → 用例（LLM 增强 / 智能体编排 / 规则版，失败自动降级）。"""
+    ctx.cases = _step_requirements(
+        ctx.pid, ctx.pdir, use_llm=ctx.use_llm, agentic=ctx.use_agentic,
+        extra_context=ctx.inject_text,
+        injected={"lessons": ctx.lessons_count,
+                  "knowledge": len(ctx.knowledge_picked)})
+
+
+def _stage_focus(ctx: _RunCtx) -> None:
+    """情景记忆回灌闭环（Phase 2）：**注入之后必须校验**。
+
+    只注入不校验 = 把"提示词发出去了"当成"结果达成了"，这是假绿的另一种形态：
+    模型没采纳、或清单项与本次需求无关时，流水线照样打印"已注入历史易错点"。
+    校验发现缺口就补成骨架用例，但**如实标注是回灌补齐的**，不冒充生成时自发覆盖。
+    """
+    try:
+        _f_items = ctx.lessons.cluster_failures(
+            ctx.lessons.extract_failures(ctx.run_store.list_snapshots(ctx.pid, limit=500)))
+        if ctx.cases and Path(ctx.cases).is_file() and _f_items:
+            ctx.focus = _step_focus(ctx.pdir, Path(ctx.cases), _f_items)
+    except Exception as e:      # 校验失败不能中断流水线
+        # 必须出声：跳过校验 = 回灌闭环没有兑现，而流水线表面照常完成。
+        log.warning("  [重点覆盖] 校验跳过（回灌闭环未兑现）：%s", e)
+
+
+def _stage_meta(ctx: _RunCtx) -> None:
+    """记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数，并写首份 run_meta。
+
+    溯源信息**从产物回读**，不拿参数重新推一遍 ——
+    两处各推一次迟早漂移（比如降级只发生在一处），而 cases.md 里的标记就是事实。
+    """
+    ctx.mode = ("智能体多步自审编排" if (ctx.use_llm and ctx.use_agentic)
+                else ("LLM 增强" if ctx.use_llm else "规则版"))
+    ctx.case_count = 0
+    if ctx.cases and Path(ctx.cases).is_file():
+        try:
+            _, _rows = _parse_cases(Path(ctx.cases).read_text(encoding="utf-8"))
+            ctx.case_count = len(_rows)
+        except Exception:
+            # 可忽略：用例条数仅供 run_meta 溯源展示，解析失败记 0，不参与判定。
+            ctx.case_count = 0
+    ctx.req_count = 0
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import generate_cases as _gc  # noqa: E402
+        _rf = ctx.pdir / "requirements.md"
+        if _rf.is_file():
+            ctx.req_count = len(_gc.parse_requirements(_rf.read_text(encoding="utf-8")))
+    except Exception:
+        # 可忽略：需求条数仅供 run_meta 溯源展示，取不到记 0，不参与判定。
+        ctx.req_count = 0
+    ctx.provenance = None
+    if ctx.cases and Path(ctx.cases).is_file():
+        try:
+            sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+            import provenance as _pvmod  # noqa: E402
+            ctx.provenance = _pvmod.parse(Path(ctx.cases).read_text(encoding="utf-8"))
+        except Exception:
+            # 可忽略：溯源标记读不到就按"无标记"处理，不参与判定。
+            ctx.provenance = None
+    ctx.degraded = bool((ctx.provenance or {}).get("degraded"))
+
+    _focus_fields: Dict[str, Any] = {}
+    if ctx.focus:
+        # 分开记：native（生成即覆盖）与 backfilled（回灌补齐）不能合并成一个"覆盖率"——
+        # 合并之后"补出来的覆盖"会和"模型真学会了"长得一样。
+        _focus_fields = {"focus_total": ctx.focus.get("total"),
+                         "focus_native": ctx.focus.get("native"),
+                         "focus_persisted": ctx.focus.get("persisted"),
+                         "focus_backfilled": ctx.focus.get("backfilled"),
+                         "focus_rate": ctx.focus.get("rate")}
+    ctx.meta_fields = dict(
+        mode=ctx.mode, use_llm=ctx.use_llm, agentic=ctx.use_agentic,
+        lessons_injected=bool(ctx.lessons_injected),
+        knowledge_injected=bool(ctx.knowledge_injected),
+        requirements=ctx.req_count, cases=ctx.case_count,
+        degraded=ctx.degraded, provenance=ctx.provenance, **_focus_fields)
+    _write_run_meta(ctx.pdir, **ctx.meta_fields)
+
+
+def _stage_quality(ctx: _RunCtx) -> None:
+    """L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），落盘供报告/看板/控制台读。
+
+    默认**只展示与看趋势、不做门禁**；只有显式传了 --quality-min 才按未达标处理
+    （且真正的失败退出放到最后判定，先把报告生成出来）。
+    """
+    _qmin = getattr(ctx.args, "quality_min", None)
+    if not (ctx.cases and Path(ctx.cases).is_file()):
+        return
+    try:
+        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
+        import case_quality as _cq  # noqa: E402
+        _q = _step_quality(ctx.pdir, Path(ctx.cases).read_text(encoding="utf-8"),
+                           requirement_count=ctx.req_count or None, mode=ctx.mode)
+        if _q and _q.get("total") is not None:
+            ctx.meta_fields["quality"] = _q["total"]
+        if _qmin is not None:
+            # 算不出分数时 check_min 判**不达标** —— 把"没算出来"当"达到要求"是假绿
+            _qok, _qmsg = _cq.check_min(_q or {"total": None}, _qmin)
+            ctx.meta_fields["quality_gate"] = {"min": int(_qmin),
+                                               "total": (_q or {}).get("total"),
+                                               "passed": bool(_qok)}
+            if not _qok:
+                ctx.qfail = ((_q or {}).get("total"), int(_qmin), _qmsg)
+            _write_run_meta(ctx.pdir, **ctx.meta_fields)
+    except Exception as e:  # 打分失败绝不能拖垮主流程
+        log.warning("  [质量分] 计算失败（不影响流程）：%s", e)
+
+
+def _stage_api(ctx: _RunCtx) -> None:
+    """② 接口自动化（pytest；被测服务不可达会自动 skip）。"""
+    _step_api(ctx.pid, ctx.pdir, ctx.base_url)
+
+
+def _stage_regression(ctx: _RunCtx) -> None:
+    """③ 核心业务回归。"""
+    ctx.reg = _step_regression(ctx.pid, ctx.pdir)
+
+
+def _stage_perf(ctx: _RunCtx) -> None:
+    """④ 性能与安全冒烟（--perf）：独立门禁，结论并入 run_meta 便于追溯。"""
+    if not getattr(ctx.args, "perf", False):
+        return
+    pf = _step_perf_security(ctx.pdir)
+    ctx.meta_fields["perf_security"] = {"all_pass": bool(pf.get("all_pass")),
+                                        "summary": pf.get("summary", "")}
+    _write_run_meta(ctx.pdir, **ctx.meta_fields)
+
+
+def _stage_web(ctx: _RunCtx) -> None:
+    """⑤ Web UI 冒烟（--web）：独立门禁。
+
+    缺 web.yaml 时**不静默跳过**——静默跳过等于悄悄放松门禁，所以显式告警并记入 run_meta。
+    """
+    if not getattr(ctx.args, "web", False):
+        return
+    if not (ctx.pdir / "web.yaml").is_file():
+        log.warning("  [Web 冒烟] ⚠ 未执行：缺少 %s；"
+                    "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。",
+                    ctx.pdir / "web.yaml")
+        ctx.meta_fields["web"] = {"executed": False,
+                                  "reason": "缺少 web.yaml，未执行"}
+    else:
+        wf = _step_web(ctx.pdir, browser=getattr(ctx.args, "browser", None))
+        ctx.meta_fields["web"] = {"executed": True,
+                                  "all_pass": bool(wf.get("all_pass")),
+                                  "summary": wf.get("summary", "")}
+    _write_run_meta(ctx.pdir, **ctx.meta_fields)
+
+
+def _stage_agentic(ctx: _RunCtx) -> None:
+    """⑥ AI 探索测试（--explore）：**可降级阶段**，不是门禁。
+
+    缺 mission.yaml 时同样**不静默跳过**（与 --web 同源口径）：显式告警并记入 run_meta。
+    注意：降级**不影响退出码** —— 探索只产出"发现"，不产出 pass/fail；
+    但它"有没有真的跑"必须留在案（否则报告看不出少了这一环）。
+    """
+    if not getattr(ctx.args, "explore", False):
+        return
+    _mission_arg = getattr(ctx.args, "mission", None)
+    if not (ctx.pdir / "mission.yaml").is_file() and not _mission_arg:
+        log.warning("  [AI 探索] ⚠ 未执行：缺少 %s；本次不产出探索结论"
+                    "（不得据此判为「已探索」），请补任务声明后重跑 --explore。",
+                    ctx.pdir / "mission.yaml")
+        ctx.meta_fields["agentic"] = {"executed": False, "status": None,
+                                      "reason": "not_configured",
+                                      "summary": "缺少 mission.yaml，未执行"}
+    else:
+        _ag = _step_agentic(
+            ctx.pdir,
+            mission=Path(_mission_arg) if _mission_arg else None,
+            max_steps=int(getattr(ctx.args, "explore_max_steps", 30) or 30),
+            timeout=getattr(ctx.args, "explore_timeout", None),
+            headed=bool(getattr(ctx.args, "explore_headed", False)),
+        )
+        ctx.meta_fields["agentic"] = _agentic_contract().summarize_for_meta(_ag)
+    _write_run_meta(ctx.pdir, **ctx.meta_fields)
+
+
+def _stage_diff(ctx: _RunCtx) -> None:
+    """失败项新旧对比：把「这次新红的」从「一直红的」里挑出来。
+
+    ★ **必须在写本次快照之前**（注册表里 `snapshot.requires` 含 `"diff"`）——
+    否则历史里最新一条就是本次自己，自己跟自己比，结论永远是"没有新增失败"。
+    这条顺序约束原先只写在注释里，现在是 `requires` 上的一条边。
+    """
+    try:
+        ctx.diff_payload = _step_diff(ctx.pid, ctx.pdir, ctx.reg, ctx.run_store)
+    except Exception as e:      # 对比失败不能拖垮主流程
+        log.warning("  [新旧对比] 失败（不影响流程）：%s", e)
+
+
+def _stage_snapshot(ctx: _RunCtx) -> None:
+    """★ 写本次快照 + 重建 lessons.md（失败根因闭环）。"""
+    ctx.run_store.insert_snapshot(ctx.pid, ctx.reg, trigger=ctx.snapshot_trigger)
+    ctx.lessons.rebuild_from_snapshots(
+        ctx.run_store.list_snapshots(ctx.pid, limit=500), ctx.pdir)
+
+
+def _stage_defects(ctx: _RunCtx) -> None:
+    """缺陷草稿：把"流水线上的红"整理成能提交给开发的缺陷单（**不自动提单**）。"""
+    try:
+        _step_defects(ctx.pid, ctx.pdir, ctx.reg, ctx.base_url, diff=ctx.diff_payload)
+    except Exception as e:      # 草稿生成失败不能拖垮主流程
+        log.warning("  [缺陷草稿] 生成失败（不影响流程）：%s", e)
+
+
+def _stage_report(ctx: _RunCtx) -> None:
+    """报告总览（聚合各阶段结论）。"""
+    _step_report(ctx.pid, ctx.pdir, ctx.cases, ctx.reg)
+
+
+def _run_stages() -> List[Stage]:
+    """全流程 `run` 的阶段注册表 —— **顺序的唯一声明处**（§4.4）。
+
+    `requires` 里既有**数据依赖**（消费上游产出），也有**写序约束**，两者不区分对待：
+    对执行顺序的约束力完全一样。
+
+    ★ 承重的一条：`snapshot` 依赖 `diff`。删掉它，`resolve_order` 会把"写快照"提到
+      "新旧对比"之前 → 结论永远是"没有新增失败"，而且**不会有别的测试变红**。
+      `tests/test_pipeline_registry.py` 就是那条会变红的线。
+    """
+    return [
+        Stage("requirements", _stage_requirements,
+              doc="需求→用例（LLM 增强 / 智能体编排 / 规则版，失败自动降级）"),
+        Stage("focus", _stage_focus, requires=("requirements",),
+              doc="重点覆盖校验：情景记忆回灌闭环（Phase 2）"),
+        Stage("meta", _stage_meta, requires=("requirements", "focus"),
+              doc="记录本次生成溯源并写首份 run_meta"),
+        Stage("quality", _stage_quality, requires=("requirements",),
+              doc="用例结构质量分（默认只展示，不做门禁）"),
+        Stage("api", _stage_api,
+              doc="接口自动化（pytest；被测不可达自动 skip）"),
+        Stage("regression", _stage_regression, doc="核心业务回归"),
+        Stage("perf", _stage_perf, requires=("regression",),
+              doc="④ 性能与安全冒烟（--perf）"),
+        Stage("web", _stage_web, requires=("regression",),
+              doc="⑤ Web UI 冒烟（--web）"),
+        Stage("agentic", _stage_agentic, requires=("regression",),
+              doc="⑥ AI 探索测试（--explore，可降级阶段）"),
+        Stage("diff", _stage_diff, requires=("regression",),
+              doc="失败项新旧对比（消费历史快照）"),
+        Stage("snapshot", _stage_snapshot, requires=("diff",),
+              doc="★写本次快照 + 重建 lessons（**必须在 diff 之后**）"),
+        Stage("defects", _stage_defects, requires=("regression", "diff"),
+              doc="缺陷草稿（整理失败项，不自动提单）"),
+        Stage("report", _stage_report,
+              requires=("requirements", "api", "quality", "regression",
+                        "perf", "web", "agentic", "defects"),
+              doc="报告总览（聚合各阶段结论）"),
+    ]
+
+
+def _regression_stages() -> List[Stage]:
+    """核心回归 `regression` 的阶段注册表（与 run **共用** `_stage_*` 实现）。
+
+    同样把"`diff` 必须在 `snapshot` 之前"这条约束显式声明出来 —— 原先两处命令各写
+    一遍注释，现在收敛到同一套 `requires`，口径只此一处。
+    """
+    return [
+        Stage("regression", _stage_regression, doc="核心业务回归"),
+        Stage("diff", _stage_diff, requires=("regression",),
+              doc="失败项新旧对比（消费历史快照）"),
+        Stage("snapshot", _stage_snapshot, requires=("diff",),
+              doc="★写本次快照 + 重建 lessons（**必须在 diff 之后**）"),
+        Stage("defects", _stage_defects, requires=("regression", "diff"),
+              doc="缺陷草稿（不自动提单）"),
+    ]
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     meta = load_project(args.id)
     pdir = PROJECTS_DIR / args.id
@@ -1881,174 +2204,27 @@ def cmd_run(args: argparse.Namespace) -> None:
             # 可忽略：注入计数仅供溯源标记展示，取不到就记 0，不参与判定。
             _lcount = 0
 
-    use_llm = bool(getattr(args, "llm", False))
-    use_agentic = bool(getattr(args, "agentic", False))
-    cases = _step_requirements(args.id, pdir, use_llm=use_llm,
-                              agentic=use_agentic, extra_context=inject,
-                              injected={"lessons": _lcount, "knowledge": len(kpicked)})
+    ctx = _RunCtx(
+        args=args, pid=args.id, pdir=pdir, base_url=base_url,
+        run_store=run_store, lessons=ls,
+        use_llm=bool(getattr(args, "llm", False)),
+        use_agentic=bool(getattr(args, "agentic", False)),
+        inject_text=inject, lessons_count=_lcount,
+        lessons_injected=bool(ls_injected), knowledge_injected=bool(kinject),
+        knowledge_picked=kpicked, snapshot_trigger="run")
 
-    # 情景记忆回灌闭环（Phase 2）：**注入之后必须校验**。
-    # 只注入不校验 = 把"提示词发出去了"当成"结果达成了"，这是假绿的另一种形态：
-    # 模型没采纳、或清单项与本次需求无关时，流水线照样打印"已注入历史易错点"。
-    # 校验发现缺口就补成骨架用例，但**如实标注是回灌补齐的**，不冒充生成时自发覆盖。
-    _focus: Optional[Dict[str, Any]] = None
-    try:
-        _f_items = ls.cluster_failures(
-            ls.extract_failures(run_store.list_snapshots(args.id, limit=500)))
-        if cases and Path(cases).is_file() and _f_items:
-            _focus = _step_focus(pdir, Path(cases), _f_items)
-    except Exception as e:      # 校验失败不能中断流水线
-        # 必须出声：跳过校验 = 回灌闭环没有兑现，而流水线表面照常完成。
-        log.warning("  [重点覆盖] 校验跳过（回灌闭环未兑现）：%s", e)
-    # 记录本次生成方式（可追溯）：模式 / 是否注入历史易错点 / 需求与用例条数
-    _mode = "智能体多步自审编排" if (use_llm and use_agentic) else ("LLM 增强" if use_llm else "规则版")
-    _case_count = 0
-    if cases and Path(cases).is_file():
-        try:
-            _, _rows = _parse_cases(Path(cases).read_text(encoding="utf-8"))
-            _case_count = len(_rows)
-        except Exception:
-            # 可忽略：用例条数仅供 run_meta 溯源展示，解析失败记 0，不参与判定。
-            _case_count = 0
-    _req_count = 0
-    try:
-        sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
-        import generate_cases as _gc  # noqa: E402
-        _rf = pdir / "requirements.md"
-        if _rf.is_file():
-            _req_count = len(_gc.parse_requirements(_rf.read_text(encoding="utf-8")))
-    except Exception:
-        # 可忽略：需求条数仅供 run_meta 溯源展示，取不到记 0，不参与判定。
-        _req_count = 0
-    # 溯源信息**从产物回读**，不拿参数重新推一遍 ——
-    # 两处各推一次迟早漂移（比如降级只发生在一处），而 cases.md 里的标记就是事实。
-    _pv = None
-    if cases and Path(cases).is_file():
-        try:
-            sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
-            import provenance as _pvmod  # noqa: E402
-            _pv = _pvmod.parse(Path(cases).read_text(encoding="utf-8"))
-        except Exception:
-            _pv = None
-    _degraded = bool((_pv or {}).get("degraded"))
+    # ---- 注册表驱动执行 ----
+    # 阶段顺序由 _run_stages() 的 requires 经**稳定拓扑排序**解析决定，不再靠本函数里的
+    # 书写位置（§4.4：把隐式顺序变成显式依赖）。改顺序 = 改注册表，且有等价性守卫。
+    stages = _run_stages()
+    log.info("E 层阶段顺序（拓扑解析）：%s", " → ".join(resolve_order(stages)))
+    run_stages(stages, ctx)
 
-    _focus_fields: Dict[str, Any] = {}
-    if _focus:
-        # 分开记：native（生成即覆盖）与 backfilled（回灌补齐）不能合并成一个"覆盖率"——
-        # 合并之后"补出来的覆盖"会和"模型真学会了"长得一样。
-        _focus_fields = {"focus_total": _focus.get("total"),
-                         "focus_native": _focus.get("native"),
-                         "focus_persisted": _focus.get("persisted"),
-                         "focus_backfilled": _focus.get("backfilled"),
-                         "focus_rate": _focus.get("rate")}
-    _write_run_meta(pdir, mode=_mode, use_llm=use_llm, agentic=use_agentic,
-                    lessons_injected=bool(ls_injected),
-                    knowledge_injected=bool(kinject),
-                    requirements=_req_count, cases=_case_count,
-                    degraded=_degraded, provenance=_pv, **_focus_fields)
-    _meta_fields = dict(mode=_mode, use_llm=use_llm, agentic=use_agentic,
-                        lessons_injected=bool(ls_injected),
-                        knowledge_injected=bool(kinject),
-                        requirements=_req_count, cases=_case_count,
-                        degraded=_degraded, provenance=_pv, **_focus_fields)
-
-    # L3 评测常态化：每次 run 都算一次结构质量分（确定性、零依赖、不联网），
-    # 落盘后供报告/看板/控制台读。默认**只展示与看趋势、不做门禁**；
-    # 只有显式传了 --quality-min 才按未达标处理（且放到最后判定，先把报告生成出来）。
-    _qmin = getattr(args, "quality_min", None)
-    _qfail: Optional[Tuple[Any, int, str]] = None   # (实际分, 阈值, 说明)
-    if cases and Path(cases).is_file():
-        try:
-            sys.path.insert(0, str(ROOT / "extensions" / "requirements_to_cases"))
-            import case_quality as _cq  # noqa: E402
-            _q = _step_quality(pdir, Path(cases).read_text(encoding="utf-8"),
-                               requirement_count=_req_count or None, mode=_mode)
-            if _q and _q.get("total") is not None:
-                _meta_fields["quality"] = _q["total"]
-            if _qmin is not None:
-                # 算不出分数时 check_min 判**不达标** —— 把"没算出来"当"达到要求"是假绿
-                _qok, _qmsg = _cq.check_min(_q or {"total": None}, _qmin)
-                _meta_fields["quality_gate"] = {"min": int(_qmin),
-                                                "total": (_q or {}).get("total"),
-                                                "passed": bool(_qok)}
-                if not _qok:
-                    _qfail = ((_q or {}).get("total"), int(_qmin), _qmsg)
-                _write_run_meta(pdir, **_meta_fields)
-        except Exception as e:  # 打分失败绝不能拖垮主流程
-            log.warning("  [质量分] 计算失败（不影响流程）：%s", e)
-
-    _step_api(args.id, pdir, base_url)
-    reg = _step_regression(args.id, pdir)
-
-    # ④ 性能与安全冒烟（--perf 开启）：独立门禁，结论并入 run_meta 便于追溯
-    if getattr(args, "perf", False):
-        pf = _step_perf_security(pdir)
-        _meta_fields["perf_security"] = {"all_pass": bool(pf.get("all_pass")),
-                                         "summary": pf.get("summary", "")}
-        _write_run_meta(pdir, **_meta_fields)
-
-    # ⑤ Web UI 冒烟（--web 开启）：独立门禁。
-    # 缺 web.yaml 时**不静默跳过**——静默跳过等于悄悄放松门禁，所以显式告警并记入 run_meta。
-    if getattr(args, "web", False):
-        if not (pdir / "web.yaml").is_file():
-            log.warning("  [Web 冒烟] ⚠ 未执行：缺少 %s；"
-                        "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。",
-                        pdir / "web.yaml")
-            _meta_fields["web"] = {"executed": False,
-                                   "reason": "缺少 web.yaml，未执行"}
-        else:
-            wf = _step_web(pdir, browser=getattr(args, "browser", None))
-            _meta_fields["web"] = {"executed": True,
-                                   "all_pass": bool(wf.get("all_pass")),
-                                   "summary": wf.get("summary", "")}
-        _write_run_meta(pdir, **_meta_fields)
-
-    # ⑥ AI 探索测试（--explore 开启）：**可降级阶段**，不是门禁。
-    # 缺 mission.yaml 时同样**不静默跳过**（与 --web 同源口径）：显式告警并记入 run_meta。
-    # 注意：降级**不影响退出码** —— 探索只产出"发现"，不产出 pass/fail；
-    # 但它"有没有真的跑"必须留在案（否则报告看不出少了这一环）。
-    if getattr(args, "explore", False):
-        _mission_arg = getattr(args, "mission", None)
-        if not (pdir / "mission.yaml").is_file() and not _mission_arg:
-            log.warning("  [AI 探索] ⚠ 未执行：缺少 %s；本次不产出探索结论"
-                        "（不得据此判为「已探索」），请补任务声明后重跑 --explore。",
-                        pdir / "mission.yaml")
-            _meta_fields["agentic"] = {"executed": False, "status": None,
-                                      "reason": "not_configured",
-                                      "summary": "缺少 mission.yaml，未执行"}
-        else:
-            _ag = _step_agentic(
-                pdir,
-                mission=Path(_mission_arg) if _mission_arg else None,
-                max_steps=int(getattr(args, "explore_max_steps", 30) or 30),
-                timeout=getattr(args, "explore_timeout", None),
-                headed=bool(getattr(args, "explore_headed", False)),
-            )
-            _meta_fields["agentic"] = _agentic_contract().summarize_for_meta(_ag)
-        _write_run_meta(pdir, **_meta_fields)
-
-    # 失败项新旧对比：**必须在写本次快照之前**做（此刻历史里还没有本次）
-    diff_payload: Optional[Dict[str, Any]] = None
-    try:
-        diff_payload = _step_diff(args.id, pdir, reg, run_store)
-    except Exception as e:      # 对比失败不能拖垮主流程
-        log.warning("  [新旧对比] 失败（不影响流程）：%s", e)
-
-    run_store.insert_snapshot(args.id, reg, trigger="run")
-    ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
-
-    # 缺陷草稿：把"流水线上的红"整理成能提交给开发的缺陷单（不自动提单）
-    try:
-        _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
-    except Exception as e:      # 草稿生成失败不能拖垮主流程
-        log.warning("  [缺陷草稿] 生成失败（不影响流程）：%s", e)
-
-    _step_report(args.id, pdir, cases, reg)
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
 
     # 可选质量门禁（--quality-min）：放在报告之后判定，保证失败时也有报告可查。
-    if _qfail:
-        got, need, why = _qfail
+    if ctx.qfail:
+        got, need, why = ctx.qfail
         raise SystemExit(
             f"\n❌ 用例结构质量分未达标：{why}（--quality-min {need}；实际 {got}）。\n"
             f"   注意：结构分只反映形式完整性，未达标不代表用例一定有问题，"
@@ -2060,7 +2236,6 @@ def cmd_regression(args: argparse.Namespace) -> None:
     pdir = PROJECTS_DIR / args.id
     base_url = (meta.get("env", {}) or {}).get("base_url", "http://localhost:8080")
     print(f"== 核心业务回归：{args.id}（环境 {base_url}）==")
-    reg = _step_regression(args.id, pdir)
 
     # P2 情景记忆：写快照 + 重建 lessons.md（失败根因闭环）
     run_store = _load_run_store()
@@ -2068,23 +2243,18 @@ def cmd_regression(args: argparse.Namespace) -> None:
     sys.path.insert(0, str(ROOT / "extensions" / "memory"))
     import lessons as ls  # noqa: E402
 
-    # 失败项新旧对比：**必须在写本次快照之前**做（同上，否则自己跟自己比）
-    diff_payload: Optional[Dict[str, Any]] = None
-    try:
-        diff_payload = _step_diff(args.id, pdir, reg, run_store)
-    except Exception as e:
-        log.warning("  [新旧对比] 失败（不影响门禁）：%s", e)
+    # 与全流程 run **共用**阶段实现与注册表机制：`diff` 必须在 `snapshot` 之前
+    # 这条约束不再靠注释，而是 _regression_stages() 里 snapshot.requires 的一条边
+    # （原先两处命令各写一遍注释，现在口径只此一处）。
+    ctx = _RunCtx(
+        args=args, pid=args.id, pdir=pdir, base_url=base_url,
+        run_store=run_store, lessons=ls, snapshot_trigger="regression")
 
-    run_store.insert_snapshot(args.id, reg, trigger="regression")
-    ls.rebuild_from_snapshots(run_store.list_snapshots(args.id, limit=500), pdir)
+    stages = _regression_stages()
+    log.info("E 层阶段顺序（拓扑解析）：%s", " → ".join(resolve_order(stages)))
+    run_stages(stages, ctx)
 
-    # 缺陷草稿：只跑回归也该拿到（性能安全/Web 结论从既有产物读，没跑就没有）
-    try:
-        _step_defects(args.id, pdir, reg, base_url, diff=diff_payload)
-    except Exception as e:      # 草稿生成失败不能影响门禁退出码
-        log.warning("  [缺陷草稿] 生成失败（不影响门禁）：%s", e)
-
-    sys.exit(0 if reg["all_pass"] else 1)
+    sys.exit(0 if ctx.reg["all_pass"] else 1)
 
 
 def cmd_defects(args: argparse.Namespace) -> None:
