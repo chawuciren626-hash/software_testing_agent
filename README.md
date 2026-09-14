@@ -529,6 +529,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 9 | **出错必出声**：诊断走日志、结果走 stdout | 静默 `except` 与裸 `print` 让"红了却定位不到"反复发生。诊断进 stderr + 日志文件（带 `run_id` 可跨进程串起同一次运行），**呈现类输出**留在 stdout 以便 `\|` 管道接走 |
 | 10 | **一次运行一条线（run_id）** | 控制台任务用 `tid` 作 run_id，经 `STA_RUN_ID` 传给子进程；日志每行带它，跨进程可检索。守护见 `tests/test_obs.py` |
 | 11 | **能改状态的动作必须留痕、且能被一键禁掉** | 控制台一旦暴露到局域网，"谁都点得动、出事了查不到"就是两个缺口。所以：`/api/*` 的写操作各留一行 `audit.jsonl`（谁/何时/哪个项目/结果，**被拦下的尝试也留痕**）；`STA_CONSOLE_READONLY=1` 一键切成只读（写 403、读放行、登录不受影响）。守护见 `tests/test_console_guard.py` |
+| 12 | **对被测系统不信任，对自己也不信任** | 我们要求"HTTP 4xx/5xx 一律 FAIL、环境不可达绝不判绿"，却曾把"停不停/成没成"交给 agent 自评 —— 同一个团队两套尺度。所以探索循环必须有**硬**资源上限（`AGENT_MAX_TURNS` / `AGENT_TOKEN_BUDGET`，到顶即止且不再问模型）、结束原因**枚举化**（含 `max-turns` / `budget-exhausted`）、"达成"由**程序**按确定性断言判定（判不了记 `unknown`，**算不出就不猜**）。守护见 `tests/test_guardrails.py` |
 
 > 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
 > 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，

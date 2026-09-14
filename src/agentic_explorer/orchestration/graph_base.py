@@ -10,12 +10,19 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import operator
 import re
-from typing import Annotated, Any, Dict, List, Sequence, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 
+from agentic_explorer.orchestration.guardrails import (
+    EndReason,
+    Limits,
+    check_limits,
+    count_new_tokens,
+)
 from agentic_explorer.tools.browser.engine import get_action_tape
 from agentic_explorer.utils import console
 from agentic_explorer.utils.llm import make_llm  # noqa: F401  re-exported for back-compat
@@ -73,7 +80,14 @@ class AgentState(TypedDict):
     # Recent browser commands kept in state (capped); full log persisted to JSONL.
     action_tape: Annotated[List[Dict[str, Any]], _bounded_tape_reducer]
     # Step counter for loop prevention; always replaced with the latest value.
+    # ⚠️ 这是**软**计数：到顶后会被 supervisor 归 1（探索策略，见 guardrails 的说明）。
     step_count: Annotated[int, lambda _old, new: new]
+    # **硬**轮次计数：只增不减，绝不被软重置触碰；到 max_turns 即终止（§3.2）。
+    turns: Annotated[int, lambda _old, new: new]
+    # 累计 token（各 agent 节点按依赖相加）；与 `turns` 一起构成资源安全阀。
+    tokens_used: Annotated[int, operator.add]
+    # 结构化结束原因（EndReason 的取值）；"" = 尚未终止。
+    end_reason: Annotated[str, lambda _old, new: new]
     # Bug summaries collected across all iterations (for final report and supervisor context).
     bugs_found: Annotated[List[str], operator.add]
     # URL paths navigated to, used to guide the supervisor toward unexplored areas.
@@ -401,13 +415,18 @@ def _sanitize_messages_for_model(messages: Sequence[BaseMessage]) -> List[BaseMe
     return sanitized
 
 
-def make_agent_node(agent, *, name: str = "agent", quiet: bool = False, app_url_hash: str = ""):
+def make_agent_node(agent, *, name: str = "agent", quiet: bool = False,
+                    app_url_hash: str = "", limits: Optional[Limits] = None):
     """Return an async LangGraph node function that streams agent messages in real-time.
 
     Uses ``astream`` internally so THOUGHT / ACTION / OBSERV lines appear on the
     console as the inner agent produces them, rather than batching at node completion.
+
+    Also accumulates per-turn token usage into ``tokens_used`` so the supervisor's
+    hard budget has something to compare against (see ``guardrails``).
     """
     _max = 120 if quiet else 500
+    limits = limits or Limits()
 
     async def _node(state: AgentState, config=None, *, store=None) -> dict:
         from agentic_explorer.ui import state_emitter
@@ -428,23 +447,41 @@ def make_agent_node(agent, *, name: str = "agent", quiet: bool = False, app_url_
             filtered_state["messages"] = _sanitize_messages_for_model(
                 filtered_state["messages"]
             )
+        # 内层 agent 返回的是**完整**消息列表（含历史），故留一份历史用于
+        # "只算本轮新增 token"（否则每轮都会重复计入历史，预算被严重高估）。
+        prior_messages: Sequence[BaseMessage] = filtered_state.get("messages") or []
 
-        out: dict = {}
-        seen_count = 0
-        async for snapshot in agent.astream(filtered_state, config=config):
-            out = snapshot
-            messages = snapshot.get("messages", [])
-            for msg in messages[seen_count:]:
-                _print_react(msg, name, _max)
-                if state_emitter.is_enabled() and isinstance(msg, AIMessage):
-                    text = _msg_text(msg)
-                    if text.strip():
-                        state_emitter.append_thought(name, text)
-                        state_emitter.emit()
-            seen_count = len(messages)
+        async def _drain() -> dict:
+            """跑完内层 agent 的流式输出。
+
+            单独抽出来是为了能给**整个回合**套一个超时（见下方 step_timeout）。
+            """
+            snapshot: dict = {}
+            seen = 0
+            async for snap in agent.astream(filtered_state, config=config):
+                snapshot = snap
+                messages = snap.get("messages", [])
+                for msg in messages[seen:]:
+                    _print_react(msg, name, _max)
+                    if state_emitter.is_enabled() and isinstance(msg, AIMessage):
+                        text = _msg_text(msg)
+                        if text.strip():
+                            state_emitter.append_thought(name, text)
+                            state_emitter.emit()
+                seen = len(messages)
+            return snapshot
+
+        # 单步超时（§3.2 的第三道保险）：**默认不启用**（step_timeout=0）。
+        # 现有 Playwright 已有动作级超时（5s/15s）；turn 级超时会打断合法的长回合，
+        # 故做成显式开关（AGENT_STEP_TIMEOUT）。超时按异常抛出 → main.py 归入 end_reason=error。
+        if limits.step_timeout and limits.step_timeout > 0:
+            out: dict = await asyncio.wait_for(_drain(), timeout=limits.step_timeout)
+        else:
+            out = await _drain()
 
         new_messages: Sequence[BaseMessage] = out.get("messages", [])
         new_tape = list(get_action_tape(thread_id)[before:])
+        turn_tokens = count_new_tokens(new_messages, prior_messages)
 
         if store and app_url_hash and new_tape:
             from agentic_explorer.memory import write_semantic_memories_from_tape
@@ -460,22 +497,29 @@ def make_agent_node(agent, *, name: str = "agent", quiet: bool = False, app_url_
             "action_tape": new_tape,
             "bugs_found": _extract_bugs(new_messages),
             "explored_paths": _extract_paths(new_messages),
+            # 累加进 tokens_used（state 里用 operator.add 归约），供硬预算判断。
+            "tokens_used": turn_tokens,
         }
 
     return _node
 
 
-def make_supervisor_node(llm, agent_names: tuple, app_url: str, max_steps: int, agent_descriptions: str = None, app_url_hash: str = ""):
-    """Return an async LangGraph supervisor node with step-limit reset and exploration context.
+def make_supervisor_node(llm, agent_names: tuple, app_url: str, max_steps: int,
+                         agent_descriptions: str = None, app_url_hash: str = "",
+                         limits: Optional[Limits] = None):
+    """Return an async LangGraph supervisor node with hard limits, soft reset, and context.
 
-    The supervisor:
-    - Increments the step counter each cycle.
-    - Injects a reset directive (with exploration context) when ``max_steps`` is reached.
-    - Provides the routing LLM with bugs-found and explored-paths context so it can
-      steer agents toward unexplored areas.
-    - Reads cross-session memory (known pages, quirks) from the Store when available.
-    - Routes to one of ``agent_names`` or to ``"FINISH"``.
+    **软硬分离**（审阅报告 §3.2 / §9 魔鬼代言人 #4）：
+
+    - **软**：`max_steps` 只是"换个区域"的**重置触发器**（探索策略，避免过早收敛）——
+      到顶把 `step_count` 归 1，**但绝不触碰 `turns`**。这段行为保持原样。
+    - **硬**：`limits.max_turns` / `limits.token_budget` 由 `guardrails.check_limits` 判定，
+      到顶即路由 `FINISH` 并写入 `end_reason`，**不再重置、也不再调用路由 LLM**。
+      旧的实现里根本没有这一层，所以"理论上可以无限循环"。
+
+    其余职责不变：注入 bugs/已探索路径上下文、读跨会话记忆、路由到某个 agent 或 `FINISH`。
     """
+    limits = limits or Limits.from_env(max_steps=max_steps)
     available_agents = ", ".join(f"'{n}'" for n in agent_names)
     routing_schema = {
         "title": "SupervisorRouting",
@@ -489,6 +533,32 @@ def make_supervisor_node(llm, agent_names: tuple, app_url: str, max_steps: int, 
     routing_llm = llm.with_structured_output(schema=routing_schema, method="function_calling")
 
     async def supervisor_node(state: AgentState, *, store=None) -> dict:
+        # ---- 硬护栏（§3.2）：先判硬上限；到顶即终止 —— 不软重置、也不调路由 LLM ----
+        turns = state.get("turns", 0) + 1
+        tokens = state.get("tokens_used", 0)
+        forced = check_limits(limits, turns=turns, tokens=tokens)
+        if forced is not None:
+            console.warn(
+                f"HARD LIMIT ({forced.value}) at turn {turns} — "
+                f"max_turns={limits.max_turns}, tokens={tokens}/"
+                f"{limits.token_budget or 'unlimited'}. Terminating without reset."
+            )
+            from agentic_explorer.ui import state_emitter
+            if state_emitter.is_enabled():
+                state_emitter.update(
+                    active_node="FINISH",
+                    step_count=state.get("step_count", 0),
+                    bugs_count=len(state.get("bugs_found", [])),
+                    explored_paths=list(dict.fromkeys(state.get("explored_paths", [])))[:20],
+                )
+                state_emitter.emit()
+            return {
+                "next_agent": "FINISH",
+                "turns": turns,
+                "step_count": state.get("step_count", 0),
+                "end_reason": forced.value,
+            }
+
         current_step = state.get("step_count", 0) + 1
         reset_triggered = current_step > max_steps
 
@@ -544,7 +614,10 @@ def make_supervisor_node(llm, agent_names: tuple, app_url: str, max_steps: int, 
             [SystemMessage(content=supervisor_prompt), routing_request]
         )
 
-        result: dict = {"next_agent": decision["next"], "step_count": current_step}
+        # 注意：`current_step` 可能已被上面的软重置归 1，而 `turns` 只增不减 ——
+        # 这正是"探索可以没有内容上限，但必须有硬资源上限"的落点。
+        result: dict = {"next_agent": decision["next"], "step_count": current_step,
+                        "turns": turns}
         if extra_messages:
             result["messages"] = extra_messages
 

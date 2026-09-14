@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import argparse
 import random
@@ -32,6 +33,7 @@ from agentic_explorer.tools.common.custom_tools import (
     fetch_agent_skill,
     run_agent_skill_script,
 )
+from agentic_explorer.orchestration import guardrails
 from agentic_explorer.orchestration.graph_base import dedupe_bugs
 from agentic_explorer.orchestration.standard_graph import build_graph
 from agentic_explorer.orchestration.advanced_graph import build_advanced_graph
@@ -156,6 +158,27 @@ def _is_transient_error(exc: Exception) -> bool:
 def _is_rate_limit(exc: Exception) -> bool:
     msg = str(exc).upper()
     return any(x in msg for x in ("429", "RATE_LIMIT", "RESOURCE_EXHAUSTED", "QUOTA"))
+
+
+def _record_error_result(thread_id: str, exc: Exception, limits) -> None:
+    """把运行期异常归入结构化结束原因 `error` 并落档（§3.2 的枚举化）。
+
+    只负责**留痕**，不改变失败语义 —— 调用方照旧把异常抛出去。
+    目标判定记 `unknown`：出错了就"算不出"，**不猜**（既不冒充通过也不冒充失败）。
+    """
+    try:
+        result = guardrails.build_result(
+            thread_id=thread_id,
+            end_reason=guardrails.EndReason.ERROR,
+            goal_verdict=guardrails.GoalVerdict.UNKNOWN,
+            reasons=[f"{type(exc).__name__}: {str(exc)[:300]}"],
+            limits=limits,
+        )
+        os.makedirs(f"report_{thread_id}", exist_ok=True)
+        with open(f"report_{thread_id}/result.json", "w", encoding="utf-8") as rf:
+            json.dump(result, rf, ensure_ascii=False, indent=2)
+    except Exception as inner:      # 连落档都失败：出声，但绝不能盖住原始异常
+        console.warn(f"Failed to record error result for {thread_id}: {inner}")
 
 
 async def run_missions():
@@ -454,8 +477,17 @@ async def run_missions():
         base_tools = doc_tools + skill_tools
 
         console.step("Compiling LangGraph swarms...")
-        standard_app = await build_graph(base_tools, active_page, memory_saver, cfg.app, max_steps=args.max_steps, quiet=args.quiet, store=memory_store)
-        advanced_app = await build_advanced_graph(base_tools, active_page, memory_saver, cfg.app, max_steps=args.max_steps, quiet=args.quiet, store=memory_store)
+        # 硬护栏（§3.2）：软 `max_steps` 之外的资源安全阀。显式打印出来，
+        # 免得"到底有没有上限"只能靠读代码回答。
+        limits = guardrails.Limits.from_env(max_steps=args.max_steps)
+        console.info(
+            f"Hard limits: max_turns={limits.max_turns}"
+            f" (soft max_steps={args.max_steps}), "
+            f"token_budget={limits.token_budget or 'unlimited'}, "
+            f"step_timeout={limits.step_timeout or 'off'}"
+        )
+        standard_app = await build_graph(base_tools, active_page, memory_saver, cfg.app, max_steps=args.max_steps, quiet=args.quiet, store=memory_store, limits=limits)
+        advanced_app = await build_advanced_graph(base_tools, active_page, memory_saver, cfg.app, max_steps=args.max_steps, quiet=args.quiet, store=memory_store, limits=limits)
         console.success("Ready")
 
         for mission in missions:
@@ -465,6 +497,11 @@ async def run_missions():
             is_advanced = any(kw in thread_id.lower() for kw in ADVANCED_KEYWORDS)
             mission_type = "ADVANCED" if is_advanced else "STANDARD"
             app = advanced_app if is_advanced else standard_app
+
+            # 目标编译（§3.2 第 3 条）：mission 可声明 `goal:` 块；不声明就用默认断言
+            # （至少一条成功动作 + 不得出现"不可达"错误）。判定由**程序**做，
+            # 模型只能提供候选结论 —— 见文件末尾的 verdict 落档。
+            mission_goal = guardrails.MissionGoal.from_spec(mission.get("goal"))
 
             console.mission_start(thread_id, mission_type)
 
@@ -500,6 +537,10 @@ async def run_missions():
                     "messages": [HumanMessage(content=prompt)],
                     "next_agent": "",
                     "step_count": 0,
+                    # 硬护栏的记账位（§3.2）：turns 只增不减，tokens 各节点累加。
+                    "turns": 0,
+                    "tokens_used": 0,
+                    "end_reason": "",
                     "action_tape": [],
                     "bugs_found": [],
                     "explored_paths": [],
@@ -612,8 +653,10 @@ async def run_missions():
                             initial_state = None  # resume from checkpoint
                         else:
                             console.fail(f"Failed after {max_retries} attempts.")
+                            _record_error_result(thread_id, e, limits)
                             raise
                     else:
+                        _record_error_result(thread_id, e, limits)
                         raise
 
             console.step(f"Generating report for {thread_id}...")
@@ -656,7 +699,8 @@ async def run_missions():
                 "- **Mission ID & Objective**\n"
                 "- **Actions Taken** (Brief summary)\n"
                 "- **Issues Found** (Any UI errors, visual anomalies, or tool failures)\n"
-                "- **Final Status** (PASS or FAIL based on whether the objective was achieved)\n\n"
+                "- **Model's Assessment** (your own opinion ONLY; a harness-computed verdict is "
+                "appended afterwards and is authoritative — do not claim it as final)\n\n"
                 "Output ONLY plain Markdown text."
             ))
 
@@ -676,8 +720,10 @@ async def run_missions():
                             await asyncio.sleep(delay)
                         else:
                             console.fail(f"Report generation failed after {max_retries} attempts.")
+                            _record_error_result(thread_id, e, limits)
                             raise
                     else:
+                        _record_error_result(thread_id, e, limits)
                         raise
 
             clean_report_text = report_response.content
@@ -690,6 +736,36 @@ async def run_missions():
                 report_file.write(f"\n{clean_report_text}\n\n---\n")
 
             tape = get_action_tape(thread_id)
+
+            # ---- 程序判定（§3.2 第 2、3 条）：结束原因与"是否达成"都由 harness 计算 ----
+            # 模型生成的报告只是**候选结论**；这里才是权威判定（两处不一致时以此为准）。
+            verdict, verdict_reasons = guardrails.judge_mission(
+                mission_goal,
+                explored_paths=final_state.values.get("explored_paths", []),
+                tape=tape,
+            )
+            forced = guardrails.parse_end_reason(final_state.values.get("end_reason"))
+            end_reason = guardrails.classify_end_reason(forced=forced, verdict=verdict)
+            result = guardrails.build_result(
+                thread_id=thread_id,
+                end_reason=end_reason,
+                goal_verdict=verdict,
+                reasons=verdict_reasons,
+                turns=int(final_state.values.get("turns", 0)),
+                tokens=int(final_state.values.get("tokens_used", 0)),
+                actions=len(tape),
+                bugs=len(bugs_found),
+                limits=limits,
+            )
+            try:
+                with open(f"report_{thread_id}/result.json", "w", encoding="utf-8") as rf:
+                    json.dump(result, rf, ensure_ascii=False, indent=2)
+            except Exception as e:      # 落档失败不影响任务本身，但必须出声
+                console.warn(f"Failed to write result.json for {thread_id}: {e}")
+            console.info(
+                f"VERDICT end_reason={end_reason.value} goal={verdict.value} "
+                f"turns={result['turns']} tokens={result['tokens']}"
+            )
 
             # Write episodic memory (session summary + bug catalog)
             try:
@@ -718,6 +794,8 @@ async def run_missions():
                     f"- **Tape log:** `action_tape.jsonl`\n"
                     f"- **Reproductions:** any `reproduction_*.spec.ts` in this folder can be run with `npx playwright test`.\n"
                 )
+                # 程序判定（权威）追加在最后：让人一眼能看到"谁说了算"。
+                report_file.write(guardrails.render_verdict_markdown(result))
 
             if mission_cooldown > 0 and mission != missions[-1]:
                 console.info(f"Cooling down {mission_cooldown}s before next mission...")

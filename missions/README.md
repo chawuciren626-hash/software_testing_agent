@@ -10,6 +10,10 @@ missions:
   - thread_id: "<unique_id>"   # required — also routes to a graph (see below)
     prompt: >                  # required — natural-language instructions for the agent
       <multi-line text>
+    goal:                      # optional — machine-checkable objectives (see below)
+      must_visit: ["/", "/admin/products"]
+      require_actions: 3
+      forbid_unreachable: true
 ```
 
 ### `thread_id`
@@ -35,6 +39,44 @@ missions:
   right agent.
 * Use placeholders for app-specific values — for example `<YOUR_APP>`, `<APP_URL>`,
   `<example_search_term>`, `<dashboard_path>` — and replace them before running.
+
+### `goal` (optional) — 让"达成"由**程序**判定
+
+The loop's stop/stop-achieved decisions are **not** taken from the model's self-assessment.
+After each mission the harness computes a verdict from deterministic assertions
+(`orchestration/guardrails.py`); the `goal` block is how you tell it what to check.
+
+| Field                | Default | Meaning                                                              |
+|----------------------|---------|----------------------------------------------------------------------|
+| `must_visit`         | `[]`    | Paths/URLs that must actually have been reached (parent matches children). |
+| `require_actions`    | `1`     | Minimum number of **successful** recorded actions in the action tape. |
+| `forbid_unreachable` | `true`  | Fail if any action hit a **connection-level** error (`net::ERR_*`, refused/timeout). Business errors (4xx/5xx, validation) do **not** count. |
+
+Omit the block and you get the defaults above (`require_actions: 1` +
+`forbid_unreachable: true`) — no need to know the app's URL structure in advance.
+
+The verdict is written to `report_<thread_id>/result.json` and appended to the report as
+「程序判定（权威）」. It is one of:
+
+* `achieved` — every checkable assertion passed;
+* `unachieved` — at least one failed;
+* `unknown` — **nothing could be checked** (e.g. you turned every assertion off, or there is
+  no visit trail at all). `unknown` is deliberate: we do not guess — it is never reported as
+  a pass.
+
+The mission's end reason is enumerated too (`completed` / `blocked` / `max-turns` /
+`budget-exhausted` / `error`) — see the hard limits below.
+
+### Hard resource limits
+
+Separate from the **soft** `--max-steps` (which only resets the step counter and redirects
+exploration), the supervisor enforces **hard** caps and terminates when they are hit:
+
+| Env var               | Default                     | Meaning                                    |
+|-----------------------|-----------------------------|--------------------------------------------|
+| `AGENT_MAX_TURNS`     | `max(4 * max_steps, 40)`    | Absolute supervisor turns; never reset.    |
+| `AGENT_TOKEN_BUDGET`  | `0` (unlimited)             | Token spend ceiling (agent-call usage only). |
+| `AGENT_STEP_TIMEOUT`  | `0` (off)                   | Per-turn wall-clock timeout, in seconds.   |
 
 ## Standard agents
 

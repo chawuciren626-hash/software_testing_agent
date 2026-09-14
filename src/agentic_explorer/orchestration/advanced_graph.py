@@ -34,7 +34,7 @@ from agentic_explorer.orchestration.graph_base import (
 # Advanced Swarm Graph Builder
 # ---------------------------------------------------------
 
-async def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, app: AppMeta, max_steps: int = 30, quiet: bool = False, store=None):
+async def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, app: AppMeta, max_steps: int = 30, quiet: bool = False, store=None, limits=None):
     """Build the advanced persona and autonomous exploration graph.
 
     Args:
@@ -42,8 +42,9 @@ async def build_advanced_graph(base_tools: list, active_page: Page, checkpointer
         active_page: Live Playwright page used by the deterministic engine.
         checkpointer: LangGraph checkpoint backend (SQLite saver).
         app: App metadata (name, url, description) injected into agent prompts.
-        max_steps: Supervisor reset threshold.
+        max_steps: Supervisor **soft** reset threshold (exploration strategy).
         store: Optional LangGraph Store for cross-session memory.
+        limits: Hard resource limits (``guardrails.Limits``); ``None`` → 由环境变量推导。
     """
     llm = make_llm(temperature=0)
 
@@ -132,8 +133,8 @@ async def build_advanced_graph(base_tools: list, active_page: Page, checkpointer
             agent_descriptions = f"{agent_descriptions}\n{routing_supplement}"
 
     workflow = StateGraph(AgentState)  # type: ignore[arg-type]
-    workflow.add_node("Supervisor", make_supervisor_node(llm, tuple(agent_registry), app_url, max_steps, agent_descriptions, app_url_hash=url_hash))  # type: ignore[arg-type]
+    workflow.add_node("Supervisor", make_supervisor_node(llm, tuple(agent_registry), app_url, max_steps, agent_descriptions, app_url_hash=url_hash, limits=limits))  # type: ignore[arg-type]
     for agent_name, agent in agent_registry.items():
-        workflow.add_node(agent_name, make_agent_node(agent, name=agent_name, quiet=quiet, app_url_hash=url_hash))  # type: ignore[arg-type]
+        workflow.add_node(agent_name, make_agent_node(agent, name=agent_name, quiet=quiet, app_url_hash=url_hash, limits=limits))  # type: ignore[arg-type]
 
     return compile_swarm(workflow, agent_registry, checkpointer, store=store)

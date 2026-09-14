@@ -179,6 +179,36 @@
 
 **案例对照**：DeepSeek Harness 的 E 层把 turn 结束定义为 5 种结构化原因（completed / blocked / max-tokens / aborted / error），引擎不设步数上限但用 `max_rounds` 兜底；Claude Code 的 E 层有 per-session 硬上限。**两者都不把"停不停"交给模型的一句自评。**
 
+> **落地状态（2026-09-14）**
+> - 新增 `src/agentic_explorer/orchestration/guardrails.py` —— **只依赖标准库**，不 import
+>   langgraph/langchain。这样它才能在**不装基座重型依赖**的 CI 硬门禁里被直接测试
+>   （`requirements-dev.txt` 不含 langgraph）。三件事都在这里：
+>   `EndReason` 枚举（`completed` / `blocked` / `max-turns` / `budget-exhausted` / `error`）、
+>   `Limits` + `check_limits`（**硬**上限）、`judge_mission`（**程序**判定达成）。
+> - **软硬分离（§9 魔鬼代言人 #4 的落点）**：`max_steps` 的**软**重置**原样保留**（探索策略），
+>   但 `AgentState` 新增只增不减的 `turns`；`check_limits` 用 **`>=`**（上限），
+>   而软重置用的是 **`>`**（触发阈值）—— 这个符号差别就是"软 vs 硬"。到顶即路由 `FINISH`
+>   并写 `end_reason`，**不再调用路由 LLM**（省掉一次无意义的调用，也别指望它自己停）。
+> - **三道保险**：① 硬 `max_turns`（默认 `max(4·max_steps, 40)`，`AGENT_MAX_TURNS` 可覆盖）
+>   ② token 预算（`AGENT_TOKEN_BUDGET`，默认 0=显式不限；由 agent 节点累计 `usage_metadata`）
+>   ③ 单步超时（`AGENT_STEP_TIMEOUT`，**默认关**——见下方诚实标注）。
+> - **判定权归程序**：`judge_mission` 把 mission 目标编译成确定性断言（`require_actions` /
+>   `forbid_unreachable` / `must_visit`），返回 `achieved` / `unachieved` / **`unknown`**；
+>   `report_<tid>/result.json` 落档，并在报告末尾追加「程序判定（权威）」段。
+>   报告提示词里的 `Final Status` 已改成 **`Model's Assessment`（非权威）** —— 模型只提供候选结论。
+> - **诚实标注（不假装全覆盖）**：
+>   * token 预算只统计**能从 `usage_metadata` 读到**的对话调用；supervisor 的路由调用
+>     不回传 usage，**不计入**。这是如实记账，不是精确计量。
+>   * `step_timeout` **默认不启用**：现有 Playwright 已有动作级超时（5s/15s），turn 级超时会
+>     打断合法的长回合，故做成显式开关。
+>   * 判不了就记 `unknown`（**算不出就不猜**，沿用 A 世界判据 #6）—— 既不冒充通过也不冒充失败。
+>   * B 世界的 `print` / 静默 `except` 仍未纳入日志化（属序 3 的遗留，不在本轮范围）。
+> - **守护**：`tests/test_guardrails.py`（34 例，**已进 CI 硬门禁白名单**）+ 
+>   `tests/test_agentic_guardrails_wiring.py`（8 例，用 `importorskip` 保护，在装基座依赖的
+>   base-tests 作业里跑）。**变异验证 5 项**：`>=` 改回 `>` → 2 例红；拆硬停分支 → 2 例红；
+>   软重置顺手归零 `turns`（=无限循环复现）→ 1 例红；`count_new_tokens` 把历史也算进去 → 2 例红；
+>   `classify_end_reason` 恒定 completed → 3 例红。CI 硬门禁精确集合 **577 passed**（543 + 34）。
+
 ---
 
 ### 3.3 🔴 智能层与运行态的接线是 0 **【已复核】**
@@ -343,7 +373,7 @@
 | 2 | ✅ 抽 `extensions/common/`（§4.1）**（2026-09-14 已完成）** | 低风险、立刻兑现"口径唯一"；为后续重构铺路 | `tests/test_common_parity.py`（23 例）：身份 `is` 同一对象 + AST `def` 定义数各为 1 + 同输入逐字段相等；已接入 CI 硬门禁白名单。变异验证 2 项通过 |
 | 3 | ✅ 引入 `logging` + `run_id`（§4.2）**（2026-09-14 已完成）** | 没有它，后面每一步的排障成本都在重复支付 | 诊断路径无裸 `print`（stderr **15→0**、except 内 **24→0**）；静默 `except` **26→0** 且**每处都有分类注释**。守护测试 `tests/test_obs.py`（13 例，已进 CI 硬门禁白名单）+ 5 项变异验证。逐项证据见 §4.2 落地状态 |
 | 4 | ✅ L 层最小拦截 + 审计（§4.3）**（2026-09-14 已完成）** | 团队化前的最低安全垫 | 写操作有审计行（谁/何时/哪个项目/结果，被拦也留痕）；只读模式可用（写 403、读放行、登录不受影响）；`tests/test_console_guard.py`（45 例，已进 CI 硬门禁白名单）+ 4 项变异验证。逐项证据见 §4.3 落地状态 |
-| 5 | 基座循环补护栏（§3.2） | **S1 的前置条件**，不是 S1 的一部分 | 硬 `max_turns` 生效；结束原因为枚举；目标达成由程序判定 |
+| 5 | ✅ 基座循环补护栏（§3.2）**（2026-09-14 已完成）** | **S1 的前置条件**，不是 S1 的一部分 | 硬 `max_turns` 生效（到顶即 FINISH 且**不调 LLM**，软重置不再动 `turns`）；结束原因为 5 态枚举；目标达成由程序判定（含 `unknown`）。`tests/test_guardrails.py`（34 例，已进硬门禁）+ 接线测试（8 例，importorskip）+ 5 项变异验证。逐项证据见 §3.2 落地状态 |
 | 6 | S1 独立入口接入（§3.3） | 前 5 步做完，接线才是"加能力"而不是"引进风险" | 无 key / 超时 / 异常任一情况下降级规则版且**降级原因出声** |
 | 7 | E 层注册表化（§4.4）、拆文件（§4.6） | 纯内部质量，随时可做 | 阶段依赖显式声明；等价性断言通过 |
 
@@ -383,6 +413,13 @@
 5. **数据治理**：`runs.db` 与 `projects/` 的增长、备份、保留期、脱敏策略均未设计。
 6. **业务用例质量**：本审阅**不评价**"生成的用例是否真测到了业务要害"——那是测试领域专家的判断，我只能评价机制（覆盖校验/质量分的结构与克制）。
 7. **灰度与回滚**：现有"可选阶段 + 降级"已具备雏形，但无版本化产物、无灰度分流。
+8. **基座依赖存在版本冲突（2026-09-14 新增发现）**：`langchain-mcp-adapters 0.2.2` 依赖
+   `mcp.shared.context.RequestContext`，而本环境装的是 `mcp 2.2.0`（该符号已移除）→
+   `agentic_explorer.tools.common.custom_tools` → `agentic_explorer.main` 导入即失败，
+   `tests/test_context_disclosure.py` 因此在收集期就报错（**早已存在，与序 4/序 5 无关**）。
+   影响面：MCP 工具链与 `main.py` 的整体导入；**不影响** `orchestration/graph_base.py`
+   （序 5 的护栏因此仍可独立验证）。**修法**（未做，建议单列一项）：锁 `mcp<2`，或升级
+   `langchain-mcp-adapters` 到匹配版本。**注意**：这属依赖治理，不属 §7 路线，别混进来一起改。
 
 **需要你回答的一个问题（决定 §9.1 那条反驳成不成立）**：
 

@@ -3,7 +3,10 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根（tests/ 的上级）
-for sub in ("", "web_console", "extensions", "extensions/regression", "extensions/perf_security",
+# "src" 是基座包 `agentic_explorer` 的根（命名空间包）。加入是为了让**零依赖**的
+# `orchestration/guardrails.py` 能在不装 langgraph/langchain 的 CI 硬门禁里被直接测试。
+for sub in ("", "src", "web_console", "extensions", "extensions/regression",
+           "extensions/perf_security",
            "extensions/web_testing", "extensions/requirements_to_cases",
            "extensions/reporting", "tests/eval"):
     p = os.path.join(ROOT, sub)
