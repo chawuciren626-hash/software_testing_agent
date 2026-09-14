@@ -93,6 +93,7 @@ Playwright 自愈执行、Action Tape 录制与缺陷可复现脚本、跨会话
 software_testing_agent/
 ├── project_manager.py            # 统一 CLI 入口（10 个子命令）
 ├── software_testing_agent.py     # 无 LLM 的轻量流水线入口
+├── run_console.py                # 本地起控制台（前台 / --detach 后台常驻）
 ├── extensions/                   # 本仓库新增的能力模块
 │   ├── api_testing/              # ① 接口自动化（pytest + requests，可独立运行）
 │   ├── requirements_to_cases/    # ② 需求→用例 + 结构质量分（case_quality）+ 生成溯源（provenance）
@@ -410,9 +411,13 @@ python project_manager.py web mall-admin --only login --headed            # 有�
 ## 9. Web 控制台
 
 ```bash
-.venv\Scripts\python web_console\app.py
+.venv\Scripts\python run_console.py            # 前台运行，Ctrl+C 停止
+.venv\Scripts\python run_console.py --detach   # 后台常驻（日志写 web_server.log）
 # 打开 http://127.0.0.1:8765
 ```
+
+也可以直接 `python web_console/app.py`；`run_console.py` 只是多做了两件事——启动前先探活（已在跑就不重复起）、
+`--detach` 用 WMI 创建进程以便脱离终端常驻。
 
 八个功能页：
 

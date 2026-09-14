@@ -30,6 +30,9 @@ runs.db
 agent_memory.*
 latest_vision.jpg
 
+# ===== 运行日志（本地运行/调试产生，禁止入库）=====
+*.log
+
 # ===== 生成物 / 报告（运行时产生，禁止入库）=====
 projects/
 projects_dashboard.html
