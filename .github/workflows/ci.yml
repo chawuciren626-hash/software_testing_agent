@@ -56,6 +56,7 @@ jobs:
           set -o pipefail
           python -m pytest \
             tests/test_common_parity.py \
+            tests/test_dependency_bounds.py \
             tests/test_pipeline_registry.py \
             tests/test_obs.py \
             tests/test_project_manager_units.py \
@@ -180,9 +181,19 @@ jobs:
 
       - name: 运行基座测试（失败不影响门禁）
         run: |
+          # `--ignore` 的每一项都必须是"这个作业跑不动它"，不是"它不重要"。
+          # ⚠️ 这里曾有一条 ignore 在掩盖真实缺陷：tests/test_context_disclosure.py 因
+          #    langchain-mcp-adapters ↔ mcp 版本冲突在**收集期**就报错，被 ignore 掉之后
+          #    「CI 全绿」与「main.py 根本导不进来」同时成立。该冲突已于 2026-09-15 修复
+          #    （适配器升 0.3.2，由上游自行声明 mcp<2.0.0），故该 ignore 已移除。
+          # 剩余两条 ignore 的原因（如实记录，避免再次"绿着掩盖问题"）：
+          #   · test_config.py —— 该文件自身在 Windows 上会因 `os.chdir(临时目录)` 后在
+          #     chdir 回来之前删除该目录而报 WinError 32（POSIX 允许、Windows 不允许）。
+          #     属**测试自身的平台缺陷**，与产品无关；本机无法验证其在 ubuntu 上的表现，保留。
+          #   · test_llm.py —— 引入时未记录原因；本机复跑 18 项全过，建议后续单独核实
+          #     能否在 ubuntu 上恢复（本轮不扩大改动面）。
           python -m pytest tests \
             --ignore=tests/test_config.py \
-            --ignore=tests/test_context_disclosure.py \
             --ignore=tests/test_llm.py \
             -q -p no:randomly
 

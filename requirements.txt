@@ -193,7 +193,7 @@ langchain-google-genai==4.2.2
     # via agentic-test-explorer (pyproject.toml)
 langchain-google-vertexai==3.2.3
     # via agentic-test-explorer (pyproject.toml)
-langchain-mcp-adapters==0.2.2
+langchain-mcp-adapters==0.3.2
     # via agentic-test-explorer (pyproject.toml)
 langchain-protocol==0.0.15
     # via langchain-core

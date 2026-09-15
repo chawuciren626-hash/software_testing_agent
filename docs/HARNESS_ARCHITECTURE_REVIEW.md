@@ -471,13 +471,35 @@
 5. **数据治理**：`runs.db` 与 `projects/` 的增长、备份、保留期、脱敏策略均未设计。
 6. **业务用例质量**：本审阅**不评价**"生成的用例是否真测到了业务要害"——那是测试领域专家的判断，我只能评价机制（覆盖校验/质量分的结构与克制）。
 7. **灰度与回滚**：现有"可选阶段 + 降级"已具备雏形，但无版本化产物、无灰度分流。
-8. **基座依赖存在版本冲突（2026-09-14 新增发现）**：`langchain-mcp-adapters 0.2.2` 依赖
-   `mcp.shared.context.RequestContext`，而本环境装的是 `mcp 2.2.0`（该符号已移除）→
-   `agentic_explorer.tools.common.custom_tools` → `agentic_explorer.main` 导入即失败，
-   `tests/test_context_disclosure.py` 因此在收集期就报错（**早已存在，与序 4/序 5 无关**）。
-   影响面：MCP 工具链与 `main.py` 的整体导入；**不影响** `orchestration/graph_base.py`
-   （序 5 的护栏因此仍可独立验证）。**修法**（未做，建议单列一项）：锁 `mcp<2`，或升级
-   `langchain-mcp-adapters` 到匹配版本。**注意**：这属依赖治理，不属 §7 路线，别混进来一起改。
+8. ✅ **基座依赖版本冲突**【2026-09-15 已修（B⑧）】
+   - **现象**：`langchain-mcp-adapters 0.2.2` 的 `callbacks.py` 依赖
+     `mcp.shared.context.RequestContext`，而环境里是 `mcp 2.2.0`（该符号已移除）→
+     `agentic_explorer.tools.common.custom_tools` → `pr_analyzer` → `agentic_explorer.main`
+     **导入即失败**；`tests/test_context_disclosure.py` 在**收集期**就报错。
+   - **掩体**：该测试被 `ci.yml` 的 `--ignore` 挡掉 → 「CI 全绿」与「`main.py` 导不进来」
+     **同时成立**。又一个"绿灯掩盖实质损坏"的形态：危险的不是报错，是它被盖住了。
+   - **根因（比"版本装错"更深一层）**：适配器 0.2.x～0.3.1 对 `mcp` 声明的**只有下界**
+     （`mcp>=1.9.2` / `>=1.24.0`，**无上界**），而 `pyproject.toml` 里 `mcp` 只是传递依赖，
+     **没有人为它的主版本负责**。于是 `requirements.txt`（uv 编译产物）会随索引漂移：
+     它今天重新编译出来就是 mcp 2.x。锁文件停在 `mcp==1.28.1` 只是"当时恰好如此"，
+     本身并不构成约束——这正是它能在环境里悄悄变成 2.2.0 的原因。
+   - **修法（把上界交还上游，不新增本地主张）**：`langchain-mcp-adapters`
+     `~=0.2.2 → ~=0.3.2`。上游直到 **0.3.2** 才把声明改成 `mcp<2.0.0,>=1.24.0`
+     （0.3.0 / 0.3.1 仍是 `mcp>=1.24.0` 无上界——已下载三个 wheel 读取 METADATA 逐条比对）。
+     锁文件随之**只改一行**：`mcp==1.28.1` / `langchain-core==1.3.3` /
+     `typing-extensions==4.15.0` 本来就已满足 0.3.2 的约束。
+   - **验收（可复核）**：`pip check` 无冲突；`main` / `custom_tools` / `pr_analyzer` 均可导入；
+     `tests/test_context_disclosure.py` **移除 ignore 后 9 项全过**；
+     `MultiServerMCPClient(connections)` 位置参数 + `get_tools()` 无 API 漂移。
+   - **守护**：`tests/test_dependency_bounds.py`（8 例，已进 CI 硬门禁白名单）——静态断言
+     ①适配器下界 ≥ 0.3.2 ②锁文件 `mcp < 2.0.0` ③`ci.yml` 不得再用 `--ignore` 遮住该测试。
+     **5 项变异验证全部红在预期粒度**（下界回退 / mcp 改回 2.2.0 / 重新盖 ignore /
+     锁文件适配器回退 / 删掉直接声明）。
+   - **仍未知（不假装全覆盖）**：本轮只在**本机 Windows** 验证；ubuntu 上的表现未实测
+     （base-tests 是 `continue-on-error`，即使红也只是可见性告警、不拦交付）。
+     另：`ci.yml` 里 `test_config.py` / `test_llm.py` 两条遗留 `--ignore` **与本冲突无关**
+     （前者是测试自身的 `os.chdir(临时目录)` 后删除该目录的 Windows 平台缺陷），
+     本轮**未动**，仅在其上方补写了原因注释，留待单独核实。
 
 **需要你回答的一个问题（决定 §9.1 那条反驳成不成立）**：
 
