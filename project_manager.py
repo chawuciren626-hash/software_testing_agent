@@ -98,7 +98,15 @@ def python_exe() -> str:
         if found:
             return found
     return sys.executable
-TODAY = datetime.date.today().isoformat()
+def _now_stamp() -> str:
+    """项目创建时刻（本地时区，秒级）。
+
+    以前只存 `date.today()`（形如 `2026-09-09`）：YAML 会把它解析成 `datetime.date`，
+    Flask 再序列化成 RFC-822（`Wed, 09 Sep 2026 00:00:00 GMT`）—— 控制台上就是
+    一串没人读的英文。改为取**创建那一刻**的秒级时间戳、加引号写出，
+    读回来就是普通字符串，展示格式交给前端决定。
+    """
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _load_dotenv(env_file: Path | None = None) -> None:
@@ -156,7 +164,7 @@ web_file: web.yaml        # ⑤ Web UI 冒烟场景（Playwright 声明式 YAML�
 #       - name: 当前管理员信息
 #         method: GET
 #         path: /admin/info
-created_at: {today}
+created_at: "{created_at}"
 """
 
 REGRESSION_TMPL = """\
@@ -343,7 +351,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         PROJECT_YAML_TMPL.format(
             pid=pid, name=name, description=description, owner=owner,
             base_url=base_url, auth_type=auth_type, login_url=login_url,
-            user_env=user_env, pass_env=pass_env, today=TODAY,
+            user_env=user_env, pass_env=pass_env, created_at=_now_stamp(),
         ),
         encoding="utf-8",
     )
@@ -1731,7 +1739,9 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
 }}
 *{{box-sizing:border-box;}}
 body{{font-family:var(--sans);background:var(--bg);color:var(--text);margin:0;padding:0;line-height:1.6;-webkit-font-smoothing:antialiased;}}
-.container{{max-width:1120px;margin:0 auto;padding:32px 24px 48px;}}
+.container{{max-width:1440px;margin:0 auto;padding:32px 24px 48px;}}
+/* 宽屏再放一档：1120 上限在 1920 屏上左右各空 ~400px，表格被迫横向滚动 */
+@media (min-width:1600px){{.container{{max-width:1600px;}}}}
 header{{margin-bottom:28px;}}
 header h1{{font-size:26px;font-weight:800;color:var(--ink);margin:0 0 8px;letter-spacing:-.3px;}}
 header .subtitle{{font-size:14px;color:var(--muted);}}

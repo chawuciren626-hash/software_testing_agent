@@ -6,11 +6,14 @@
 <title>软件测试智能体 · 控制台</title>
 <style>
 :root{
-  --ink:#0f172a; --ink-2:#1e293b; --text:#0f172a; --muted:#64748b; --muted-2:#94a3b8;
+  /* 色值经 WCAG 2.2 相对亮度公式实算（见 docs/UI_UX_REVIEW.md §3.3）：
+     语义色文字一档加深，使其配各自的 -soft 底色达到 AA 4.5:1；
+     --muted/-2 同理，避免 11px 小字不达标。改色请重算对比度，别凭观感调。 */
+  --ink:#0f172a; --ink-2:#1e293b; --text:#0f172a; --muted:#5c6b82; --muted-2:#64748b;
   --bg:#f6f8fb; --panel:#ffffff; --border:#e6eaf0; --border-2:#eef2f7;
-  --primary:#6366f1; --primary-600:#4f46e5; --primary-soft:#eef2ff;
-  --ok:#059669; --ok-soft:#d1fae5; --bad:#dc2626; --bad-soft:#fee2e2;
-  --warn:#d97706; --warn-soft:#fef3c7; --info:#2563eb; --info-soft:#dbeafe;
+  --primary:#6366f1; --primary-600:#4338ca; --primary-soft:#eef2ff;
+  --ok:#047857; --ok-soft:#d1fae5; --bad:#b91c1c; --bad-soft:#fee2e2;
+  --warn:#b45309; --warn-soft:#fef3c7; --info:#1d4ed8; --info-soft:#dbeafe;
   --purple:#7c3aed; --purple-soft:#f3e8ff;
   --shadow-sm:0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.05);
   --shadow-md:0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.07);
@@ -21,6 +24,12 @@
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:var(--sans);background:var(--bg);color:var(--text);display:flex;height:100vh;overflow:hidden;-webkit-font-smoothing:antialiased;}
 svg{display:block;}
+/* 键盘焦点环：只在键盘导航时出现（:focus-visible），鼠标点击不显示 ——
+   既保证 WCAG 2.4.7 焦点可见，又不给鼠标用户加一圈视觉噪音。
+   深色侧栏需用亮色环，否则深色描边在深底上看不见。 */
+:focus{outline:none;}
+:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:6px;}
+.sidebar :focus-visible{outline-color:#a5b4fc;}
 
 /* ---------------- Sidebar ---------------- */
 .sidebar{width:250px;flex-shrink:0;background:linear-gradient(180deg,#0f172a 0%,#111c33 100%);color:#cbd5e1;display:flex;flex-direction:column;}
@@ -29,17 +38,17 @@ svg{display:block;}
 .brand-name{font-size:15.5px;font-weight:700;color:#fff;letter-spacing:.2px;}
 .brand-sub{font-size:11px;color:#7c8aa5;margin-top:1px;letter-spacing:.4px;}
 .nav{padding:14px 12px;flex:1;overflow-y:auto;}
-.nav-group{font-size:10.5px;font-weight:700;letter-spacing:1.2px;color:#5b6b85;text-transform:uppercase;padding:14px 12px 7px;}
-.nav-item{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;color:#aeb9cc;margin-bottom:3px;transition:background .15s,color .15s;position:relative;}
+.nav-group{font-size:10.5px;font-weight:700;letter-spacing:1.2px;color:#8b9ab3;text-transform:uppercase;padding:14px 12px 7px;}
+/* 导航项是 <button>（键盘可达 + 读屏语义），故需重置原生按钮样式。
+   background 由下面的 :hover/.active 规则覆盖，这里只做"抹平原生外观"。 */
+.nav-item{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13.5px;color:#aeb9cc;margin-bottom:3px;transition:background .15s,color .15s;position:relative;width:100%;text-align:left;border:none;background:none;font-family:inherit;line-height:1.4;}
 .nav-item:hover{background:rgba(148,163,184,.1);color:#fff;}
 .nav-item.active{background:linear-gradient(90deg,rgba(99,102,241,.22),rgba(99,102,241,.06));color:#fff;}
 .nav-item.active::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:0 3px 3px 0;background:var(--primary);}
 .nav-item .ico{width:19px;height:19px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:inherit;}
 .nav-item .ico svg{width:19px;height:19px;}
 .side-foot{padding:14px 18px;border-top:1px solid rgba(148,163,184,.12);font-size:11px;color:#6b7b96;line-height:1.7;}
-.status-line{display:flex;align-items:center;gap:7px;}
 .dot{width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.18);}
-.side-foot code{font-family:var(--mono);color:#8ea0bd;font-size:10.5px;}
 
 /* ---------------- Main ---------------- */
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;}
@@ -57,6 +66,43 @@ svg{display:block;}
 .page{display:none;}
 .page.active{display:block;animation:fadeUp .35s ease both;}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+/* ---------------- Responsive ----------------
+   基线是桌面；下面两条断点只做「让窄屏可用」的最小改动：
+   1279px 收窄侧栏与间距，767px 把侧栏变成抽屉（否则 250px 固定侧栏会把内容挤没）。 */
+.nav-toggle{display:none;align-items:center;justify-content:center;width:36px;height:36px;padding:0;
+  border:1px solid var(--border);background:var(--panel);border-radius:9px;color:var(--text);
+  cursor:pointer;flex-shrink:0;}
+.nav-toggle svg{width:18px;height:18px;}
+.nav-toggle:hover{background:var(--bg);border-color:var(--primary);}
+.side-scrim{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:55;}
+.side-scrim.show{display:block;}
+
+@media (max-width:1279px){
+  .sidebar{width:212px;}
+  .nav-item{font-size:13px;padding:9px 10px;}
+  .content{padding:20px;}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));}
+  .search{width:200px;}
+}
+@media (max-width:767px){
+  .nav-toggle{display:inline-flex;}
+  /* 抽屉：默认 translateX 移出视口；只动 transform（GPU 加速），不改 width 触发重排 */
+  .sidebar{position:fixed;left:0;top:0;bottom:0;z-index:60;width:250px;
+           transform:translateX(-100%);transition:transform .25s ease;
+           box-shadow:0 8px 32px rgba(15,23,42,.28);}
+  .sidebar.open{transform:none;}
+  .topbar{padding:12px 14px;gap:10px;}
+  .topbar .spacer{display:none;}
+  .search{width:auto;flex:1;min-width:0;}
+  .summary .stat{min-width:calc(50% - 6px);}
+  .card .meta-grid{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .content{padding:16px;}
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;
+                       transition-duration:.01ms !important;}
+}
 
 /* ---------------- Buttons ---------------- */
 .btn{border:1px solid var(--border);background:var(--panel);color:var(--text);padding:8px 15px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;transition:.15s;font-family:inherit;white-space:nowrap;display:inline-flex;align-items:center;gap:7px;}
@@ -81,17 +127,39 @@ svg{display:block;}
 .section-title{font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin:0 0 14px;}
 .empty{text-align:center;color:var(--muted);padding:70px 0;font-size:14px;}
 .empty svg{width:42px;height:42px;color:var(--muted-2);margin:0 auto 14px;}
+.empty p{margin:0;}
+.empty .empty-hint{color:var(--muted-2);font-size:12.5px;margin-top:6px;}
+.empty .btn{margin-top:16px;}
 
 /* ---------------- Project cards ---------------- */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px;}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s,border-color .2s;display:flex;flex-direction:column;gap:11px;}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow-sm);transition:box-shadow .2s,transform .2s,border-color .2s;display:flex;flex-direction:column;gap:14px;}
 .card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px);border-color:#d6deea;}
-.card .head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
-.card .title{font-size:15.5px;font-weight:700;letter-spacing:.2px;}
-.card .pid{font-size:12px;color:var(--muted);font-family:var(--mono);margin-top:2px;}
-.card .meta{font-size:12.5px;color:var(--muted);line-height:1.85;}
-.card .meta code{background:var(--bg);padding:1px 6px;border-radius:5px;font-family:var(--mono);font-size:11px;color:var(--ink-2);}
+.card .head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+.card .title{font-size:15.5px;font-weight:700;letter-spacing:.2px;line-height:1.35;}
+.card .pid{font-size:12px;color:var(--muted);font-family:var(--mono);margin-top:3px;}
+/* 头部右侧只留"状态"徽标（停止/回归）；其余徽标另起一行占满卡片宽度，
+   否则会与标题抢横向空间、被压成多行歪块 —— 这就是"卡片太挤"的主因 */
+.card .head-status{display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;}
+.card .card-badges{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+/* 元信息：标签/值网格，替掉原来靠"·"堆在一行的密集文本 */
+.card .meta-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;}
+.card .mi{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.card .mi.wide{grid-column:1 / -1;}
+.card .mi-k{font-size:11px;color:var(--muted-2);font-weight:600;letter-spacing:.2px;}
+.card .mi-v{font-size:12.5px;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.card .mi-v code{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;background:var(--bg);padding:1px 6px;border-radius:5px;font-family:var(--mono);font-size:11px;color:var(--ink-2);}
+/* 操作区：执行类 / 管理类分两行，细线分隔 —— 8 个按钮平铺会缩成一团 */
 .card .ops{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px;}
+.card .ops-sec{padding-top:14px;border-top:1px solid var(--border-2);}
+/* 骨架屏：加载中替掉白屏等待。只动画 transform（GPU 加速），不动布局属性 */
+.skel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+      padding:20px 22px;position:relative;overflow:hidden;}
+.sk-line{border-radius:6px;background:var(--border-2);}
+.skel::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(148,163,184,.14),transparent);
+  animation:shimmer 1.3s infinite;}
+@keyframes shimmer{from{transform:translateX(-100%);}to{transform:translateX(100%);}}
 
 /* ---------------- Badges ---------------- */
 .badge{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;letter-spacing:.2px;}
@@ -106,6 +174,13 @@ svg{display:block;}
 .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:6px;background:var(--bg);color:var(--ink-2);font-weight:600;}
 .chip.get{background:#e0f2fe;color:#0369a1;} .chip.post{background:#fae8ff;color:#a21caf;}
 .chip.put{background:#fef3c7;color:#b45309;} .chip.del{background:#fee2e2;color:#b91c1c;}
+/* 状态冗余：颜色之外再给一个图形符号（WCAG 1.4.1 不能以颜色为唯一信息载体）。
+   色觉障碍用户（约 8% 男性）分不出绿/红，加了 ✓✕ 才真正可读。
+   .none/.gray/.purple 是"中性/类型"标签而非状态，故不加。 */
+.badge.ok::before{content:"✓";}
+.badge.bad::before{content:"✕";}
+.badge.skip::before,.badge.warn::before{content:"!";}
+.badge.info::before{content:"i";font-style:italic;}
 
 /* ---------------- Tasks ---------------- */
 .task-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
@@ -358,7 +433,7 @@ svg{display:block;}
 </head>
 <body>
 
-<aside class="sidebar">
+<aside class="sidebar" id="sidebar">
   <div class="brand">
     <div class="brand-logo">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
@@ -370,53 +445,55 @@ svg{display:block;}
   </div>
   <nav class="nav">
     <div class="nav-group">工作区</div>
-    <div class="nav-item active" data-page="projects">
+    <button type="button" class="nav-item active" data-page="projects">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>项目
-    </div>
-    <div class="nav-item" data-page="tasks">
+    </button>
+    <button type="button" class="nav-item" data-page="tasks">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/><line x1="3" y1="8" x2="3" y2="8"/><line x1="3" y1="14" x2="3" y2="14"/></svg></span>任务
-    </div>
-    <div class="nav-item" data-page="reports">
+    </button>
+    <button type="button" class="nav-item" data-page="reports">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="12"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="15"/></svg></span>报告
-    </div>
-    <div class="nav-item" data-page="automation">
+    </button>
+    <button type="button" class="nav-item" data-page="automation">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>自动化
-    </div>
-    <div class="nav-item" data-page="gates">
+    </button>
+    <button type="button" class="nav-item" data-page="gates">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg></span>门禁
-    </div>
+    </button>
     <div class="nav-group">资源</div>
-    <div class="nav-item" data-page="knowledge">
+    <button type="button" class="nav-item" data-page="knowledge">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>资料库
-    </div>
-    <div class="nav-item" data-page="skills">
+    </button>
+    <button type="button" class="nav-item" data-page="skills">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 4.8L20 8l-4 3.9.9 5.6L12 14.8 7.1 17.5 8 11.9 4 8l5.6-1.2z"/></svg></span>技能
-    </div>
+    </button>
     <div class="nav-group">系统</div>
-    <div class="nav-item" data-page="models">
+    <button type="button" class="nav-item" data-page="models">
       <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg></span>模型维护
-    </div>
+    </button>
   </nav>
-  <div class="side-foot">
-    <div class="status-line"><span class="dot"></span> 后端在线</div>
-    <!-- 开了鉴权才显示：没开鉴权时显示"退出登录"只会让人困惑 -->
-    <div id="authLine" style="display:none;margin-top:6px">
-      访问鉴权：已开启 · <a href="/logout" style="color:#a5b4fc">退出登录</a>
-    </div>
-    <div style="margin-top:6px">基座：agentic-test-explorer<br><code>python project_manager.py</code></div>
+  <!-- 侧边栏底部：只保留"已开启鉴权 · 退出登录"（默认关闭鉴权时整块不渲染，
+       避免留下一条孤立分隔线）。原先展示的在线状态 / 基座 / 启动命令属开发期信息，已移除。 -->
+  <div class="side-foot" id="authLine" style="display:none">
+    访问鉴权：已开启 · <a href="/logout" style="color:#a5b4fc">退出登录</a>
   </div>
 </aside>
 
+<div class="side-scrim" id="sideScrim"></div>
 <div class="main">
   <header class="topbar">
+    <!-- 汉堡按钮：仅 <768px 显示（见 @media 断点），用于展开抽屉式侧栏 -->
+    <button type="button" class="nav-toggle" id="navToggle" aria-label="展开导航" aria-expanded="false" aria-controls="sidebar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
     <div class="crumb">
       <h1 id="pageTitle">项目</h1>
       <div class="sub" id="pageSub">公司项目与测试环境</div>
     </div>
     <div class="spacer"></div>
-    <div class="search">
+    <div class="search" id="searchBox">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input id="searchInput" placeholder="搜索…" oninput="applySearch()">
+      <input id="searchInput" placeholder="搜索…" oninput="applySearch()" aria-label="搜索当前页面">
     </div>
     <div class="top-actions" id="topActions"></div>
   </header>
@@ -431,9 +508,12 @@ svg{display:block;}
     <section class="page active" id="page-projects">
       <div class="summary" id="projSummary"></div>
       <div class="grid" id="projectGrid"></div>
+      <!-- 空态：除说明外给一个直接行动按钮（空态是引导用户的最佳时机） -->
       <div class="empty" id="projectEmpty" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
-        暂无项目，点击右上角「＋ 新建项目」接入第一个公司项目
+        <p>暂无项目</p>
+        <p class="empty-hint">创建第一个项目后，即可生成用例、跑核心回归与门禁</p>
+        <button type="button" class="btn primary" onclick="openModal()">＋ 新建项目</button>
       </div>
     </section>
 
@@ -698,7 +778,7 @@ svg{display:block;}
       <div class="field full"><label>项目需求（Markdown，每行一条编号需求；留空则生成模板）</label>
         <textarea id="f_req" placeholder="1. 管理员可使用账号密码登录系统&#10;2. 管理员可创建新账号并校验唯一性&#10;3. 管理员可查询账号列表并支持分页"></textarea></div>
     </div>
-    <div class="err-msg" id="formErr"></div>
+    <div class="err-msg" id="formErr" role="alert"></div>
     <div class="foot">
       <button class="btn" onclick="closeModal()">取消</button>
       <button class="btn primary" id="btnCreate" onclick="createProject()">创建项目</button>
@@ -719,7 +799,8 @@ svg{display:block;}
 </div>
 
 <!-- 轻量提示条 -->
-<div class="toast" id="toast"></div>
+<!-- role/aria-live 让读屏能播报提示；容器必须一开始就在 DOM 里（动态创建的不会被监听） -->
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="false"></div>
 
 <script>
 const PAGE_META = {
@@ -732,11 +813,29 @@ const PAGE_META = {
   skills:{title:'技能',sub:'挂载到基座的 Agent Skills'},
   models:{title:'模型维护',sub:'LLM 提供商与默认模型'},
 };
+/* 搜索框作用域：只有这些页面真正支持搜索（与 applySearch 的分支一一对应）。
+   其余页面隐藏搜索框 —— 常驻但点了没反应，比没有更容易被当成"坏了"。 */
+const SEARCH_SCOPE={
+  projects:'搜索项目名称 / ID',
+  automation:'搜索场景 / 接口',
+  skills:'搜索技能名',
+  knowledge:'搜索文档名',
+};
 let pollTimer=null, currentLogTask=null, currentPage='projects', kbData=[];
 
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function svg(name){return ICONS[name]||'';}
 /* 轻量提示条：type = ok / bad / warn / 空(信息) */
+/* 统一打开弹窗：加 show + 把键盘焦点移进弹窗内首个可聚焦元素。
+   focus() 必须等一帧（display 生效后）才有效，否则元素还不可聚焦。
+   不做完整焦点陷阱（Tab 循环）—— 内部工具收益有限；但保证「Esc 一定能关、Tab 能进来」。 */
+function showMask(id){
+  const m=document.getElementById(id);
+  if(!m) return;
+  m.classList.add('show');
+  const first=m.querySelector('input:not([disabled]),select:not([disabled]),textarea:not([disabled]),button:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])');
+  if(first) setTimeout(()=>{try{first.focus();}catch(e){}},30);
+}
 function showToast(msg,type=''){
   const box=document.getElementById('toast'); if(!box) return;
   const el=document.createElement('div');
@@ -807,28 +906,58 @@ function topActionsFor(page){
   }
   return '';
 }
+/* 页面切换的唯一入口。
+   pushHist=false 用于首屏与 popstate —— 否则前进/后退时会把同一条历史再压一遍，
+   历史栈越滚越长、后退键要按两次才动。
+   无效 hash（手改地址栏）兜底回项目页，不留白屏。 */
+function switchPage(page,pushHist){
+  if(!PAGE_META[page]) page='projects';
+  document.querySelectorAll('.nav-item').forEach(e=>{
+    const on=e.dataset.page===page;
+    e.classList.toggle('active',on);
+    if(on) e.setAttribute('aria-current','page'); else e.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('.page').forEach(e=>e.classList.toggle('active',e.id==='page-'+page));
+  currentPage=page;
+  // 搜索框：仅该页支持搜索时才显示；换页清空关键词（作用域变了，留着旧词只会筛出空列表）
+  const sb=document.getElementById('searchBox'), si=document.getElementById('searchInput');
+  if(si&&si.value) si.value='';
+  if(sb) sb.style.display = SEARCH_SCOPE[page] ? '' : 'none';
+  if(si) si.placeholder = SEARCH_SCOPE[page] || '搜索…';
+  const m=PAGE_META[page];
+  document.getElementById('pageTitle').textContent=m.title;
+  document.getElementById('pageSub').textContent=m.sub;
+  document.getElementById('topActions').innerHTML=topActionsFor(page);
+  if(page==='projects') renderProjects();
+  else if(page==='tasks') renderTasks();
+  else if(page==='reports') renderReports();
+  else if(page==='automation') renderAutomation();
+  else if(page==='gates') renderGates();
+  else if(page==='knowledge') renderKnowledge();
+  else if(page==='skills') loadSkills();
+  else if(page==='models') renderModels();
+  // 窄屏下切页即收起抽屉，否则选完页面侧栏还挡着内容
+  if(window.matchMedia('(max-width:767px)').matches) setNavOpen(false);
+  if(pushHist!==false && location.hash!=='#'+page) history.pushState(null,'','#'+page);
+}
 document.querySelectorAll('.nav-item').forEach(el=>{
-  el.onclick=()=>{
-    const page=el.dataset.page;
-    document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
-    document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));
-    el.classList.add('active');
-    document.getElementById('page-'+page).classList.add('active');
-    currentPage=page;
-    const m=PAGE_META[page];
-    document.getElementById('pageTitle').textContent=m.title;
-    document.getElementById('pageSub').textContent=m.sub;
-    document.getElementById('topActions').innerHTML=topActionsFor(page);
-    if(page==='projects') renderProjects();
-    else if(page==='tasks') renderTasks();
-    else if(page==='reports') renderReports();
-    else if(page==='automation') renderAutomation();
-    else if(page==='gates') renderGates();
-    else if(page==='knowledge') renderKnowledge();
-    else if(page==='skills') loadSkills();
-    else if(page==='models') renderModels();
-  };
+  el.onclick=()=>switchPage(el.dataset.page);
 });
+// 浏览器前进/后退 + 带 hash 直接进入
+window.addEventListener('popstate',()=>switchPage(location.hash.slice(1)||'projects',false));
+
+/* 窄屏抽屉式侧栏（<768px 生效）：侧栏默认移出视口，点汉堡滑入。
+   切页 / 点遮罩 / Esc 都会收起 —— 否则"选完页面抽屉还挡着内容"。 */
+function navIsOpen(){const sb=document.getElementById('sidebar');return !!sb&&sb.classList.contains('open');}
+function setNavOpen(on){
+  const sb=document.getElementById('sidebar'),sc=document.getElementById('sideScrim'),tg=document.getElementById('navToggle');
+  if(!sb) return;
+  sb.classList.toggle('open',!!on);
+  if(sc) sc.classList.toggle('show',!!on);
+  if(tg) tg.setAttribute('aria-expanded',on?'true':'false');
+}
+document.getElementById('navToggle').onclick=()=>setNavOpen(!navIsOpen());
+document.getElementById('sideScrim').onclick=()=>setNavOpen(false);
 
 // ---------- 项目 ----------
 let SHOW_DISABLED=false;            // 项目页是否展示已停用项目
@@ -846,7 +975,7 @@ function confirmDialog(title,html,onOk){
   const fresh=ok.cloneNode(true);          // 克隆替换，避免残留上一次的 onclick
   fresh.onclick=()=>{closeConfirm();onOk();};
   ok.parentNode.replaceChild(fresh,ok);
-  document.getElementById('confirmMask').classList.add('show');
+  showMask('confirmMask');
 }
 function closeConfirm(){document.getElementById('confirmMask').classList.remove('show');}
 async function setProjectDisabled(pid,disabled){
@@ -875,9 +1004,22 @@ async function deleteProject(pid){
   renderProjects();
   if(typeof renderReports==='function') renderReports();
 }
+/* 骨架屏：延迟 150ms 才铺。本地 fetch 常常 <50ms，立刻铺会闪一下；
+   只有真的慢（>150ms）才值得显示骨架 —— 避免"优化"变成新的视觉噪音。 */
+function skeletonCards(n){
+  return Array.from({length:n},()=>`<div class="skel">
+    <div class="sk-line" style="width:58%;height:17px;margin-bottom:10px"></div>
+    <div class="sk-line" style="width:38%;height:11px;margin-bottom:18px"></div>
+    <div class="sk-line" style="width:100%;height:13px;margin-bottom:9px"></div>
+    <div class="sk-line" style="width:82%;height:13px;margin-bottom:9px"></div>
+    <div class="sk-line" style="width:64%;height:13px"></div>
+  </div>`).join('');
+}
 async function renderProjects(){
-  const r=await fetch('/api/projects?include_disabled='+(SHOW_DISABLED?'1':'0')); const d=await r.json();
   const g=document.getElementById('projectGrid');
+  const skTimer=setTimeout(()=>{g.innerHTML=skeletonCards(6);},150);
+  const r=await fetch('/api/projects?include_disabled='+(SHOW_DISABLED?'1':'0')); const d=await r.json();
+  clearTimeout(skTimer);
   document.getElementById('projectEmpty').style.display=d.projects.length?'none':'block';
   g.innerHTML='';
   const term=searchTerm();
@@ -895,8 +1037,8 @@ async function renderProjects(){
     const reg=p.reg;
     let badge;
     if(!reg){badge='<span class="badge none">未执行回归</span>';}
-    else if(reg.all_pass){badge=`<span class="badge ok">● 回归通过 ${reg.passed}/${reg.total}</span>`;}
-    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">● 回归未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
+    else if(reg.all_pass){badge=`<span class="badge ok">回归通过 ${reg.passed}/${reg.total}</span>`;}
+    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">回归未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
     // ④ 性能与安全：独立门禁，卡片上给一个概括徽标（详情页有完整表格）
     const ps=p.perf_security;
     let psBadge='';
@@ -965,15 +1107,27 @@ async function renderProjects(){
     const div=document.createElement('div');
     div.className='card'+(p.disabled?' disabled':'');
     const disBadge=p.disabled?'<span class="badge gray">已停用</span>':'';
+    // 头部只留状态徽标；其余徽标另行占满一行（避免与标题挤在一起）
+    const extraBadges=`${psBadge}${webBadge}${qBadge}${newBadge}${defBadge}`;
     div.innerHTML=`
-      <div class="head"><div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${disBadge}${badge}${psBadge}${webBadge}${qBadge}${newBadge}${defBadge}</div></div>
-      <div class="meta">环境：<code>${esc(p.base_url)}</code><br>负责人：${esc(p.owner)} · 认证：${esc(p.auth_type)} · 建于 ${esc(p.created_at)}</div>
+      <div class="head">
+        <div><div class="title">${esc(p.name||p.pid)}</div><div class="pid">${esc(p.pid)}</div></div>
+        <div class="head-status">${disBadge}${badge}</div>
+      </div>
+      ${extraBadges?`<div class="card-badges">${extraBadges}</div>`:''}
+      <div class="meta-grid">
+        <div class="mi wide"><span class="mi-k">环境</span><span class="mi-v"><code>${esc(p.base_url)}</code></span></div>
+        <div class="mi"><span class="mi-k">负责人</span><span class="mi-v">${esc(p.owner)}</span></div>
+        <div class="mi"><span class="mi-k">认证</span><span class="mi-v">${esc(p.auth_type)}</span></div>
+        <div class="mi"><span class="mi-k">创建</span><span class="mi-v">${esc(fmtCreated(p.created_at))}</span></div>
+      </div>
       <div class="ops">
         <button class="btn sm primary" onclick="exec('${jsq(p.pid)}','run')">${svg('play')} 跑全流程</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','regression')">${svg('refresh')} 跑核心回归</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','perf-security')" title="④ 性能与安全冒烟：并发延迟指标 + 鉴权/注入/泄露/配置安全检查">${svg('shield')} 性能与安全</button>
         <button class="btn sm" onclick="exec('${jsq(p.pid)}','web')" title="⑤ Web UI 冒烟：跑 web.yaml 声明的浏览器关键路径（无断言的场景不算绿）">${svg('gauge')} Web 冒烟</button>
+      </div>
+      <div class="ops ops-sec">
         <button class="btn sm" onclick="openDetail('${jsq(p.pid)}')">${svg('edit')} 需求/配置</button>
         <button class="btn sm" onclick="openReport('/reports/${jsq(p.pid)}/report.html')" ${p.has_report?'':'disabled'}>${svg('eye')} 查看报告</button>
         <button class="btn sm" title="${p.disabled?'恢复该项目（重新参与回归与看板）':'停用后不参与回归与看板，数据保留'}"
@@ -1188,8 +1342,8 @@ async function renderAutomation(){
     if(reg&&reg.results) reg.results.forEach(x=>resMap[x.name]=x.result);
     let badge;
     if(!reg){badge='<span class="badge none">未执行</span>';}
-    else if(reg.all_pass){badge=`<span class="badge ok">● ${reg.passed}/${reg.total} 通过</span>`;}
-    else{badge=`<span class="badge bad">● ${reg.passed}/${reg.total} 通过</span>`;}
+    else if(reg.all_pass){badge=`<span class="badge ok">${reg.passed}/${reg.total} 通过</span>`;}
+    else{badge=`<span class="badge bad">${reg.passed}/${reg.total} 通过</span>`;}
     const scns=a.scenarios.map(s=>{
       const res=resMap[s.name];
       let rbadge='<span class="badge gray">未执行</span>';
@@ -1208,7 +1362,7 @@ async function renderAutomation(){
     let webBlock='';
     if((a.web_scenarios||[]).length){
       const wok=a.web?!!a.web.all_pass:null;
-      const wbadge=a.web?`<span class="badge ${wok?'ok':'bad'}">● ${a.web.passed||0}/${a.web.total||0} 通过</span>`
+      const wbadge=a.web?`<span class="badge ${wok?'ok':'bad'}">${a.web.passed||0}/${a.web.total||0} 通过</span>`
                         :'<span class="badge none">未执行</span>';
       const wrows=a.web_scenarios.map(s=>{
         const hit=wResMap[s.name];
@@ -1326,6 +1480,26 @@ try{const _g=localStorage.getItem('taskGroup'); if(_g==='project'||_g==='flat') 
 const DAYS_LABEL={7:'近 7 天',30:'近 30 天',0:'全部'};
 function fmtTs(ts){const d=new Date(ts*1000);const p=n=>String(n).padStart(2,'0');
   return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());}
+/* 项目创建时间：统一渲染成 `2026.9.15 11:13:19`（月/日不补零，时分秒补零）。
+   兼容三种来源：
+     · ISO 文本 —— 新建项目已改为存秒级时间戳；
+     · 老项目只存了年月日 —— 只显示日期，**不编造 00:00:00**；
+     · Flask 把裸日期序列化成的 RFC-822 —— 同样只显示日期（做时区换算会把日期算错）。 */
+function fmtCreated(v){
+  const s=String(v??'').trim();
+  if(!s) return '';
+  const iso=s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/);
+  if(iso){
+    const day=`${iso[1]}.${Number(iso[2])}.${Number(iso[3])}`;
+    return iso[4]?`${day} ${iso[4]}:${iso[5]}:${iso[6]||'00'}`:day;
+  }
+  const rfc=s.match(/^[A-Za-z]{3},\s+(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})/);
+  if(rfc){
+    const M={Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
+    return `${rfc[3]}.${M[rfc[2]]||1}.${Number(rfc[1])}`;
+  }
+  return s;   // 认不出来的格式原样显示，绝不猜
+}
 /* 场景历史小方块：一眼看出该场景最近是稳定通过还是反复失败 */
 function sceneDots(hist){
   if(!hist||!hist.length) return '';
@@ -1608,8 +1782,8 @@ h1{font-size:20px;margin:0 0 4px;} h2{font-size:15px;margin:26px 0 10px;padding-
 table{border-collapse:collapse;width:100%;font-size:12.5px;margin-bottom:6px;}
 th,td{border:1px solid #e5e7eb;padding:6px 9px;text-align:left;}
 th{background:#f9fafb;font-weight:600;}
-.ok{color:#059669;font-weight:600;} .bad{color:#dc2626;font-weight:600;} .skip{color:#b45309;font-weight:600;}
-.muted{color:#9ca3af;font-size:12.5px;}
+.ok{color:#047857;font-weight:600;} .bad{color:#b91c1c;font-weight:600;} .skip{color:#b45309;font-weight:600;}
+.muted{color:#6b7280;font-size:12.5px;}
 svg{max-width:100%;height:auto;}
 </style></head><body>
 <h1>自动化测试报告</h1>
@@ -1662,8 +1836,8 @@ async function renderReports(){
     const reg=p.reg;
     let badge;
     if(!reg){badge='<span class="badge none">尚未生成报告</span>';}
-    else if(reg.all_pass){badge=`<span class="badge ok">● 通过 ${reg.passed}/${reg.total}</span>`;}
-    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">● 未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
+    else if(reg.all_pass){badge=`<span class="badge ok">通过 ${reg.passed}/${reg.total}</span>`;}
+    else{badge=`<span class="badge ${reg.skipped===reg.total?'skip':'bad'}">未通过 ${reg.passed}/${reg.total}${reg.skipped?` 跳过 ${reg.skipped}`:''}</span>`;}
     const rows=(reg&&reg.results||[]).map(s=>{
       const res=s.result||'';
       const rb=res==='PASS'?'<span class="badge ok">通过</span>':(res==='FAIL'?'<span class="badge bad">失败</span>':(res==='SKIP'?'<span class="badge skip">跳过</span>':'<span class="badge gray">'+esc(res||'?')+'</span>'));
@@ -1705,7 +1879,7 @@ function openReportModal(pid){
   document.getElementById('repModalTitle').textContent='报告 · '+pid;
   document.getElementById('repModalSub').textContent='由需求生成的用例与核心回归结果';
   document.getElementById('repFrame').src='/reports/'+encodeURIComponent(pid)+'/report.html';
-  document.getElementById('repMask').classList.add('show');
+  showMask('repMask');
 }
 function closeRepModal(){document.getElementById('repMask').classList.remove('show');document.getElementById('repFrame').src='';repCurrentPid='';}
 function openRepInTab(){if(repCurrentPid)window.open('/reports/'+encodeURIComponent(repCurrentPid)+'/report.html','_blank');}
@@ -1862,9 +2036,32 @@ async function refreshDashboard(){
 }
 
 // ---------- 新建项目 ----------
-function openModal(){document.getElementById('modalMask').classList.add('show');}
+function openModal(){showMask('modalMask');}
 function closeModal(){document.getElementById('modalMask').classList.remove('show');document.getElementById('formErr').style.display='none';}
+/* 前端即时校验：只为少一次往返（体验），**不为安全** —— 后端校验必须保留。
+   规则与后端保持同口径，避免"前端放行、后端打回"。返回 [{field,msg}]，field 用于聚焦。 */
+function validateProjectForm(){
+  const pid=document.getElementById('f_pid').value.trim();
+  const base=document.getElementById('f_base').value.trim();
+  const errs=[];
+  if(!pid) errs.push({field:'f_pid',msg:'项目 ID 不能为空'});
+  else if(!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,31}$/.test(pid))
+    errs.push({field:'f_pid',msg:'项目 ID 需 2-32 位，仅字母/数字/下划线/连字符，且以字母或数字开头'});
+  if(!base) errs.push({field:'f_base',msg:'Base URL 不能为空'});
+  else if(!/^https?:\/\/[^\s]+$/.test(base))
+    errs.push({field:'f_base',msg:'Base URL 需以 http:// 或 https:// 开头'});
+  return errs;
+}
 async function createProject(){
+  const errBox=document.getElementById('formErr');
+  const errs=validateProjectForm();
+  if(errs.length){
+    errBox.textContent=errs.map(e=>e.msg).join('；');
+    errBox.style.display='block';
+    const f=document.getElementById(errs[0].field); if(f) f.focus();
+    return;
+  }
+  errBox.style.display='none';
   const btn=document.getElementById('btnCreate'); btn.disabled=true; btn.textContent='创建中…';
   const body={
     pid:document.getElementById('f_pid').value.trim(),
@@ -1940,7 +2137,7 @@ async function openDetail(pid){
   document.getElementById('cbLlm').checked=false;
   document.getElementById('cbAgentic').checked=false;
   switchTab('requirements');
-  document.getElementById('detailMask').classList.add('show');
+  showMask('detailMask');
 }
 /* 项目知识（长期记忆）：展示本次需求的命中情况。
 
@@ -2372,7 +2569,23 @@ function applySearch(){
 // 关闭弹窗（点遮罩）
 document.querySelectorAll('.mask').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)m.classList.remove('show');}));
 
-renderProjects();
+// Esc 关闭弹窗：取最上层（DOM 里最后一个 .show），并复用各弹窗自己的关闭函数，
+// 避免"只去掉 show 却留下状态"（例如报告弹窗的 iframe src 不清会继续加载）。
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  if(navIsOpen()){setNavOpen(false);return;}   // 抽屉优先于弹窗：先收最上层的东西
+  const open=Array.from(document.querySelectorAll('.mask.show'));
+  if(!open.length) return;
+  const top=open[open.length-1];
+  if(top.id==='confirmMask') closeConfirm();
+  else if(top.id==='repMask') closeRepModal();
+  else if(top.id==='modalMask') closeModal();
+  else if(top.id==='detailMask') closeDetail();
+  else top.classList.remove('show');
+});
+
+// 首屏：按 hash 定位（支持刷新保持当前页、链接直达），不再无条件渲染项目页
+switchPage(location.hash.slice(1)||'projects',false);
 </script>
 </body>
 </html>

@@ -26,7 +26,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -288,6 +288,22 @@ def _read_provenance(pdir: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _created_text(v: Any) -> str:
+    """把 `project.yaml` 的 `created_at` 规整成字符串。
+
+    YAML 会把 `2026-09-09` 解析成 `datetime.date`，而 Flask 的默认 JSON 序列化
+    把它转成 RFC-822（`Wed, 09 Sep 2026 00:00:00 GMT`）—— 前端拿到手就是一串
+    没人读的英文日期。这里统一成文本，展示格式（年月日/时分秒补不补零）交给前端。
+    """
+    if v is None:
+        return ""
+    if isinstance(v, datetime):          # datetime 是 date 的子类，必须先判它
+        return v.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(v, date):
+        return v.isoformat()
+    return str(v)
+
+
 @app.get("/api/projects")
 def api_projects() -> Any:
     # 停用的项目默认不展示（也不参与看板/门禁）；?include_disabled=1 时一并列出，
@@ -304,7 +320,7 @@ def api_projects() -> Any:
             "owner": meta.get("owner", ""),
             "base_url": env.get("base_url", ""),
             "auth_type": (env.get("auth") or {}).get("type", "none"),
-            "created_at": meta.get("created_at", ""),
+            "created_at": _created_text(meta.get("created_at")),
             "has_report": (pdir / "artifacts" / "report.html").is_file(),
             "reg": _read_regression(pdir),
             "perf_security": _read_perf_security(pdir),
