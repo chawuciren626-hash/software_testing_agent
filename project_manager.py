@@ -60,6 +60,10 @@ from common.obs import get_logger, adopt_env_run_id, RUN_ID_ENV          # noqa:
 # 阶段注册表 + 依赖拓扑执行：把"阶段顺序"里的隐式约束（diff 必须在 snapshot 之前）
 # 变成显式 requires。见 docs/HARNESS_ARCHITECTURE_REVIEW.md §4.4 / §7 序 7。
 from common.pipeline import Stage, resolve_order, run_stages            # noqa: E402
+# 效率口径的**唯一定义处**（§10 #2）：进程内墙钟按阶段分解 + 合计。
+# 两条硬口径：未执行的阶段记 None 而非 0（"没跑"不等于"跑得飞快"）；
+# "人力节省"属**不可测**项，显式声明，不给任何近似值。
+from common import timing as timing_mod                                 # noqa: E402
 
 log = get_logger("project_manager")
 
@@ -1413,6 +1417,58 @@ def _defects_card_html(dp: Dict[str, Any]) -> str:
 </div>"""
 
 
+def _timing_card_html(payload: Dict[str, Any]) -> str:
+    """渲染「效率口径」卡片：各阶段耗时 + 已排除项 + **未测量声明**。
+
+    两条必须显眼：
+    ① 未执行的阶段写「未执行」，**不写 0 秒** —— 否则"没跑"看起来像"跑得飞快"；
+    ② 「人力节省 / 质量」单列一栏写明**本口径不测** —— 留白会被读成"这个数应该能算"。
+    """
+    rows: List[str] = []
+    for st in payload.get("stages") or []:
+        if not isinstance(st, dict):
+            continue
+        name = _h(st.get("name", "?"))
+        if st.get("executed") is False:
+            rows.append(
+                f"<tr><td class='name'>{name}</td>"
+                "<td class='actual' style='color:var(--muted-2)'>未执行</td>"
+                "<td class='expect'>本次未开启 / 未发生 —— 不是 0 秒</td></tr>")
+            continue
+        ok = bool(st.get("ok", True))
+        note = _h(str(st.get("error"))) if st.get("error") else \
+            ("阶段内异常（耗时仍计入）" if not ok else "")
+        rows.append(
+            f"<tr><td class='name'>{name}</td>"
+            f"<td class='actual' style='color:{'var(--ink)' if ok else 'var(--bad)'}'>"
+            f"{_h(timing_mod.format_seconds(st.get('seconds')))}</td>"
+            f"<td class='expect'>{note}</td></tr>")
+
+    not_measured = "".join(f"<li>{_h(x)}</li>" for x in (payload.get("not_measured") or []))
+    excluded = "".join(f"<li>{_h(x)}</li>" for x in (payload.get("excluded") or []))
+    skipped = payload.get("skipped") or []
+    failed = payload.get("failed") or []
+    extra = (f" · 未执行：{'、'.join(_h(x) for x in skipped)}" if skipped else "") \
+        + (f" · 异常阶段：{'、'.join(_h(x) for x in failed)}" if failed else "")
+
+    return (
+        "<div class='card'>"
+        "<div class='card-title'>效率口径 "
+        f"<span class='count'>{_h(payload.get('scope', ''))}</span></div>"
+        f"<div class='ps-sub'>合计 <b>{_h(timing_mod.format_seconds(payload.get('total_seconds')))}</b>"
+        f" · 已执行 {_h(payload.get('executed_count'))}/{_h(payload.get('stage_count'))} 阶段"
+        f" · 计量：{_h(payload.get('measured', ''))}{extra}</div>"
+        "<div class='table-wrap'><table class='reg-table'>"
+        "<thead><tr><th>阶段</th><th>耗时</th><th>说明</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        "<div class='ps-note warn'>本口径<b>只测机器侧时间</b>，以下项目"
+        "<b>明确不测</b>（不给近似值，也不用 0 冒充）："
+        f"<ul class='ps-list'>{not_measured}</ul>"
+        + (f"已排除：<ul class='ps-list'>{excluded}</ul>" if excluded else "")
+        + "</div></div>"
+    )
+
+
 def _quality_card_html(q: Dict[str, Any]) -> str:
     """用例结构质量分卡片：总分 + 维度条 + 环比 + 趋势 sparkline + 未计分说明。
 
@@ -1643,6 +1699,19 @@ def _step_report(pid: str, pdir: Path, cases_md: Optional[Path], reg: Dict[str, 
                             f" title='{_reason}'>已降级</span></div>")
         agentic_card_html = _agentic_card_html(pdir, _ag)
 
+    # 效率口径（§10 #2）：本轮各阶段耗时。**未执行的阶段照实写「未执行」**，
+    # 绝不写 0 秒 —— 否则"没跑"在报告上看起来像"跑得飞快"。
+    _tmg = timing_mod.load((_rmeta or {}).get("timing"))
+    timing_item = ""
+    timing_card_html = ""
+    if _tmg:
+        timing_item = (
+            "<div class='summary-item'><span class='k'>流水线耗时</span>"
+            f"<span class='v' style='font-size:15px;font-weight:800'"
+            f" title='{_h(_tmg.get('scope', ''))}'>"
+            f"{_h(timing_mod.format_seconds(_tmg.get('total_seconds')))}</span></div>")
+        timing_card_html = _timing_card_html(_tmg)
+
     html_doc = f"""<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>
 <meta name='viewport' content='width=device-width, initial-scale=1'>
 <title>测试报告 - {pid}</title>
@@ -1777,6 +1846,7 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
   {web_item}
   {agentic_item}
   {quality_item}
+  {timing_item}
   <div class='summary-item' style='margin-left:auto;'><span class='k' style='text-align:right;'>{gate_desc}</span></div>
 </div>
 
@@ -1796,6 +1866,8 @@ footer code{{font-family:var(--mono);background:var(--surface);padding:2px 6px;b
 {diff_card_html}
 
 {quality_card_html}
+
+{timing_card_html}
 
 <div class='card'>
   <div class='card-title'>由需求生成的用例（预览） <span class='count'>{cases_count}</span></div>
@@ -1877,6 +1949,9 @@ class _RunCtx:
     provenance: Optional[Dict[str, Any]] = None
     degraded: bool = False
     qfail: Optional[Tuple[Any, int, str]] = None
+    # 效率口径的原料：`run_stages(on_stage=...)` 逐阶段回调进来的 `StageOutcome`。
+    # 只是**收集**，不出结论 —— 汇总/判定在 `common/timing.py`（口径唯一）。
+    timing_outcomes: List[Any] = field(default_factory=list)
 
 
 def _stage_requirements(ctx: _RunCtx) -> None:
@@ -2000,9 +2075,11 @@ def _stage_regression(ctx: _RunCtx) -> None:
 
 
 def _stage_perf(ctx: _RunCtx) -> None:
-    """④ 性能与安全冒烟（--perf）：独立门禁，结论并入 run_meta 便于追溯。"""
-    if not getattr(ctx.args, "perf", False):
-        return
+    """④ 性能与安全冒烟（--perf）：独立门禁，结论并入 run_meta 便于追溯。
+
+    开关**不在本函数里判**，而是声明在注册表的 `enabled=` 上（见 `_flag`）——
+    "进来先 return"会让"本次没跑"与"跑得飞快"在效率口径里长得一模一样（都是 ≈0 秒）。
+    """
     pf = _step_perf_security(ctx.pdir)
     ctx.meta_fields["perf_security"] = {"all_pass": bool(pf.get("all_pass")),
                                         "summary": pf.get("summary", "")}
@@ -2013,9 +2090,8 @@ def _stage_web(ctx: _RunCtx) -> None:
     """⑤ Web UI 冒烟（--web）：独立门禁。
 
     缺 web.yaml 时**不静默跳过**——静默跳过等于悄悄放松门禁，所以显式告警并记入 run_meta。
+    开关（--web 有没有开）声明在注册表的 `enabled=` 上，不在这里判。
     """
-    if not getattr(ctx.args, "web", False):
-        return
     if not (ctx.pdir / "web.yaml").is_file():
         log.warning("  [Web 冒烟] ⚠ 未执行：缺少 %s；"
                     "本次不产出 Web 结论（门禁不应据此判绿），请补场景后重跑 --web。",
@@ -2036,9 +2112,8 @@ def _stage_agentic(ctx: _RunCtx) -> None:
     缺 mission.yaml 时同样**不静默跳过**（与 --web 同源口径）：显式告警并记入 run_meta。
     注意：降级**不影响退出码** —— 探索只产出"发现"，不产出 pass/fail；
     但它"有没有真的跑"必须留在案（否则报告看不出少了这一环）。
+    开关（--explore 有没有开）声明在注册表的 `enabled=` 上，不在这里判。
     """
-    if not getattr(ctx.args, "explore", False):
-        return
     _mission_arg = getattr(ctx.args, "mission", None)
     if not (ctx.pdir / "mission.yaml").is_file() and not _mission_arg:
         log.warning("  [AI 探索] ⚠ 未执行：缺少 %s；本次不产出探索结论"
@@ -2087,9 +2162,37 @@ def _stage_defects(ctx: _RunCtx) -> None:
         log.warning("  [缺陷草稿] 生成失败（不影响流程）：%s", e)
 
 
+def _finalize_timing(ctx: _RunCtx) -> None:
+    """把已测各阶段耗时**定格**成效率口径载荷，写进 run_meta。
+
+    为什么在报告之前做：报告是**持久化产物的渲染器**（其它卡片都从各自产物读），
+    所以口径也必须先落盘、再渲染 —— 否则卡片读的是内存里的临时状态，与别家不同源。
+    代价是范围止于"报告生成前"（report 自身渲染无法预知自己的耗时），
+    该排除项写在载荷的 `excluded` 里，不靠读者猜。
+    """
+    payload = timing_mod.build(timing_mod.from_outcomes(ctx.timing_outcomes))
+    ctx.meta_fields["timing"] = payload
+    _write_run_meta(ctx.pdir, **ctx.meta_fields)
+    for line in timing_mod.render_lines(payload):
+        log.info("%s", line)
+
+
 def _stage_report(ctx: _RunCtx) -> None:
-    """报告总览（聚合各阶段结论）。"""
+    """报告总览（聚合各阶段结论）。
+
+    时序：**先定格效率口径**（把已测阶段耗时写进 run_meta），再渲染报告。
+    """
+    _finalize_timing(ctx)
     _step_report(ctx.pid, ctx.pdir, ctx.cases, ctx.reg)
+
+
+def _flag(name: str):
+    """注册表用的小工具：把 CLI 开关声明成阶段的「本次该不该跑」（`Stage.enabled`）。
+
+    为什么不在阶段体内"进去先 return"：那样"没跑"会以 ≈0 秒的形态混进效率口径，
+    报告上看起来像"这个能力很快"，实际是"这个能力根本没发生"。
+    """
+    return lambda ctx: bool(getattr(ctx.args, name, False))
 
 
 def _run_stages() -> List[Stage]:
@@ -2114,11 +2217,13 @@ def _run_stages() -> List[Stage]:
         Stage("api", _stage_api,
               doc="接口自动化（pytest；被测不可达自动 skip）"),
         Stage("regression", _stage_regression, doc="核心业务回归"),
-        Stage("perf", _stage_perf, requires=("regression",),
+        # 下面三个是**可选能力**：开关写在 `enabled=` 上而不是阶段体内 ——
+        # 判否时整段跳过，效率口径里记为"未执行"，而不是伪装成"0.000s 很快"。
+        Stage("perf", _stage_perf, requires=("regression",), enabled=_flag("perf"),
               doc="④ 性能与安全冒烟（--perf）"),
-        Stage("web", _stage_web, requires=("regression",),
+        Stage("web", _stage_web, requires=("regression",), enabled=_flag("web"),
               doc="⑤ Web UI 冒烟（--web）"),
-        Stage("agentic", _stage_agentic, requires=("regression",),
+        Stage("agentic", _stage_agentic, requires=("regression",), enabled=_flag("explore"),
               doc="⑥ AI 探索测试（--explore，可降级阶段）"),
         Stage("diff", _stage_diff, requires=("regression",),
               doc="失败项新旧对比（消费历史快照）"),
@@ -2218,9 +2323,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     # 书写位置（§4.4：把隐式顺序变成显式依赖）。改顺序 = 改注册表，且有等价性守卫。
     stages = _run_stages()
     log.info("E 层阶段顺序（拓扑解析）：%s", " → ".join(resolve_order(stages)))
-    run_stages(stages, ctx)
+    # 横切关注点：逐阶段收集耗时（`StageOutcome`），供效率口径（§10 #2）汇总。
+    # 只是**收集**——汇总与"测不到什么"的声明都在 `common/timing.py`（口径唯一）。
+    run_stages(stages, ctx, on_stage=ctx.timing_outcomes.append)
 
     print(f"\n✅ 全流程完成。报告：{pdir / 'artifacts' / 'report.html'}")
+    # 效率口径：把"这一轮花了多久、花在哪"如实打出来。
+    # 未执行 / 未测量项由口径层显式声明（"未执行"不写成 0 秒），这里不另作解释。
+    print("  " + timing_mod.summary_line(ctx.meta_fields.get("timing")))
 
     # 可选质量门禁（--quality-min）：放在报告之后判定，保证失败时也有报告可查。
     if ctx.qfail:

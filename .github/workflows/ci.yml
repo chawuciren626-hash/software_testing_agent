@@ -82,6 +82,7 @@ jobs:
             tests/test_defects.py \
             tests/test_provenance.py \
             tests/test_skill_registry.py \
+            tests/test_timing.py \
             tests/eval \
             -q --tb=short 2>&1 | tee pytest-unit.log
 

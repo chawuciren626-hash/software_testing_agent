@@ -20,6 +20,9 @@ cases.md 表格）曾在多个扩展里**各自复刻一份**。复刻不会立�
 - `obs`     —— 统一日志出口 + `run_id` 贯通：`get_logger` / `setup` / `new_run_id`
 - `pipeline` —— 阶段注册表 + 依赖拓扑执行：`Stage` / `resolve_order` / `run_stages`
   （把"阶段顺序"里的隐式强约束变成显式 `requires`，见 §4.4 / §7 序 7）
+- `timing`   —— 效率口径的**唯一定义处**：`StageTime` / `build` / `load` /
+  `format_seconds` / `render_lines`（口径 = 进程内墙钟按阶段分解；显式声明
+  "未执行 ≠ 0 秒"与"人力节省不可测"，见 §10 #2）
 
 防漂移
 ------

@@ -18,7 +18,7 @@
   - 想删除某条约束，`resolve_order` 的结果就变了 —— **等价性守卫立刻变红**。
 
 本模块只提供**机制**，不含任何具体阶段（阶段声明留在调用方，如 `project_manager.py`）。
-纯标准库实现，因此可在**不装任何重依赖**的 CI 硬门禁里被直接测试。
+只依赖标准库（`time` + 统一日志出口），因此可在**不装任何重依赖**的 CI 硬门禁里被直接测试。
 
 排序规则（稳定拓扑）
 --------------------
@@ -28,11 +28,24 @@
   - **彼此无依赖**的阶段，保持**声明顺序**（= 重构前的书写顺序，人读的意图）。
 
 结果因此是**确定**的：同样的注册表永远解析出同样的顺序。
+
+两个可选声明（机制不越界，只做如实汇报）
+----------------------------------------
+- `Stage.enabled`：**本次该不该跑**。判否则整段跳过，并在回调里以 `seconds=None`
+  汇报为"未执行"—— "没跑"必须与"跑得很快"可分辨（本仓库反复栽在
+  "把未执行当成已通过"上，计时同理）。
+- `run_stages(on_stage=...)`：**横切关注点**（计时 / 进度 / 审计）的挂载点。
+  机制层不认识"效率"这个词，只负责如实回答"谁跑了多久、有没有抛错、有没有被跳过"。
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional, Sequence, Tuple
+
+from common.obs import get_logger
+
+log = get_logger("pipeline")
 
 
 class StageError(Exception):
@@ -55,11 +68,37 @@ class Stage:
     requires  必须**先于本阶段执行**的阶段名。**数据依赖**与**写序约束**都写在这里 ——
               两者对执行顺序的约束力是等价的，不区分对待。
     doc       一句话说明，供文档与排障使用
+    enabled   可选谓词 `enabled(ctx) -> bool`：**本次该不该跑**。判否时整段跳过，
+              `run` 根本不被调用，且在 `StageOutcome` 里记为 `seconds=None`（未执行）。
+
+              为什么把开关放在**声明处**而不是阶段体内"进去先 return"：
+              后者会让"没跑"与"跑得飞快"在计时上长得一模一样（都是 ≈0 秒）——
+              报告上看起来像"这个阶段很快"，实际是"这个阶段根本没发生"。
     """
     name: str
     run: Callable[[Any], None]
     requires: Tuple[str, ...] = ()
     doc: str = field(default="")
+    enabled: Optional[Callable[[Any], bool]] = None
+
+
+@dataclass(frozen=True)
+class StageOutcome:
+    """一个阶段的执行结局（供横切关注点消费：计时 / 进度 / 审计）。
+
+    `seconds is None` 表示**本阶段未执行**（被 `Stage.enabled` 判否跳过）——
+    这与"执行了、只是很快（≈0 秒）"是**两件事**，绝不能混为一谈。
+
+    `error is not None` 表示阶段体内抛了异常（此时 `seconds` 仍是**实测值**）：
+    失败也必须计时，否则最慢的失败路径会从统计里消失，数字只会更好看。
+    """
+    name: str
+    seconds: Optional[float]
+    error: Optional[BaseException] = None
+
+    @property
+    def executed(self) -> bool:
+        return self.seconds is not None
 
 
 def validate(stages: Sequence[Stage]) -> None:
@@ -110,17 +149,53 @@ def resolve_order(stages: Sequence[Stage]) -> List[str]:
 
 
 def run_stages(stages: Sequence[Stage], ctx: Any,
-               on_stage: Optional[Callable[[str], None]] = None) -> List[str]:
-    """按 `resolve_order` 的顺序依次执行各阶段，返回**实际执行顺序**。
+               on_stage: Optional[Callable[[StageOutcome], None]] = None) -> List[str]:
+    """按 `resolve_order` 的顺序依次执行各阶段，返回**实际执行顺序**（含被跳过的）。
 
     阶段自身抛出的异常**原样向上传播** —— "某一步失败要不要继续"是业务语义，
     由阶段实现自己决定（可用 try/except 包住自己的易错部分），
     机制层不替它一刀切。
+
+    `Stage.enabled` 判否的阶段**整段跳过**（`run` 不被调用），在回调里以
+    `seconds=None` 汇报为"未执行"。
+
+    `on_stage`：可选回调，在**每个阶段结束后**调用一次（成功 / 失败 / 跳过都会调用）。
+    成功与失败都带 `seconds`（实测墙钟），跳过则为 `None`。
+    ⚠️ 回调自身抛异常会被**记日志后忽略** —— 统计出问题绝不能改变业务结果；
+    但也不静默吞掉，否则"计时器坏了"会没人知道。
+
+    返回的顺序是 `resolve_order` 的结果（**注册表的全序**，不因跳过而缩短）：
+    它是"这次打算跑什么"的权威记录，与"实际执行了什么"是两个不同的问题，
+    后者由 `on_stage` 汇报的 outcome 回答。
     """
     by_name = {s.name: s for s in stages}
     order = resolve_order(stages)
+
+    def _report(outcome: StageOutcome) -> None:
+        if on_stage is None:
+            return
+        try:
+            on_stage(outcome)
+        except Exception as e:
+            # 必须出声：统计/Hook 坏了要看得见；但绝不因此中断业务流水线。
+            log.warning("阶段回调失败（统计受影响，业务继续）：%s: %s",
+                        type(e).__name__, e)
+
     for name in order:
-        if on_stage is not None:
-            on_stage(name)
-        by_name[name].run(ctx)
+        stage = by_name[name]
+        if stage.enabled is not None and not stage.enabled(ctx):
+            _report(StageOutcome(name=name, seconds=None))
+            continue
+        t0 = time.perf_counter()
+        err: Optional[BaseException] = None
+        try:
+            stage.run(ctx)
+        except BaseException as e:
+            err = e
+            raise
+        finally:
+            # 失败也要计时：把最慢的失败路径从统计里抹掉，数字只会更好看。
+            _report(StageOutcome(name=name,
+                                 seconds=time.perf_counter() - t0,
+                                 error=err))
     return order

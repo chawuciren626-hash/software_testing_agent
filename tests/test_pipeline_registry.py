@@ -139,7 +139,7 @@ def test_run_stages_fires_on_stage_callback_in_order():
     fired = []
     stages = [_st("a"), _st("b", requires=("a",))]
     run_stages(stages, ctx=object(), on_stage=fired.append)
-    assert fired == ["a", "b"]
+    assert [o.name for o in fired] == ["a", "b"]
 
 
 def test_run_stages_propagates_stage_exception():
@@ -148,6 +148,69 @@ def test_run_stages_propagates_stage_exception():
         raise RuntimeError("stage failed")
     with pytest.raises(RuntimeError, match="stage failed"):
         run_stages([_st("a", fn=_boom)], ctx=object())
+
+
+# =========================================================================== #
+# 1b) 横切关注点：StageOutcome / Stage.enabled（§10 #2 效率口径的机制基础）
+# =========================================================================== #
+def test_stage_enabled_defaults_to_none():
+    """不声明 `enabled` = 永远跑（默认**不**引入开关，避免悄悄跳过阶段）。"""
+    assert _st("a").enabled is None
+
+
+def test_run_stages_reports_seconds_for_executed_stage():
+    fired = []
+    run_stages([_st("a")], ctx=object(), on_stage=fired.append)
+    (o,) = fired
+    assert o.name == "a" and o.executed and o.error is None
+    assert o.seconds is not None and o.seconds >= 0.0
+
+
+def test_run_stages_skips_disabled_stage_and_reports_none_seconds():
+    """★ `enabled` 判否 → 整段跳过：`run` 不被调用，且汇报 `seconds=None`。
+
+    绝不允许记成 `0.0` —— 那会让"本次没执行"在效率报告里显示成"跑得飞快"。
+    """
+    ran = []
+    fired = []
+    stages = [
+        _st("a", fn=lambda _c: ran.append("a")),
+        Stage("b", lambda _c: ran.append("b"), enabled=lambda _c: False),
+        _st("c", fn=lambda _c: ran.append("c")),
+    ]
+    order = run_stages(stages, ctx=object(), on_stage=fired.append)
+
+    assert ran == ["a", "c"], "被禁用的阶段不得执行"
+    assert order == ["a", "b", "c"], "返回的是注册表全序，不因跳过而缩短"
+    skipped = {o.name: o for o in fired}["b"]
+    assert skipped.seconds is None and not skipped.executed
+
+
+def test_run_stages_times_failing_stage_even_though_exception_propagates():
+    """★ 失败阶段**照样带耗时**：把最慢的失败路径从统计里抹掉，数字只会更好看。"""
+    def _boom(_ctx):
+        raise RuntimeError("boom")
+    fired = []
+    with pytest.raises(RuntimeError):
+        run_stages([_st("a", fn=_boom)], ctx=object(), on_stage=fired.append)
+    (o,) = fired
+    assert o.name == "a" and o.seconds is not None and o.executed
+    assert isinstance(o.error, RuntimeError)
+
+
+def test_run_stages_callback_exception_does_not_break_pipeline(caplog):
+    """回调（计时/统计）自己坏掉 → 记日志后忽略：**统计不得改变业务结果**。"""
+    ran = []
+
+    def _bad_cb(_outcome):
+        raise ValueError("collector broken")
+
+    with caplog.at_level("WARNING"):
+        order = run_stages([_st("a", fn=lambda _c: ran.append("a"))],
+                          ctx=object(), on_stage=_bad_cb)
+    assert order == ["a"] and ran == ["a"], "回调异常不得中断流水线"
+    said = [r.getMessage() for r in caplog.records]
+    assert any("阶段回调失败" in m for m in said), "回调失败必须出声，不能静默吞掉"
 
 
 # =========================================================================== #
@@ -293,18 +356,47 @@ def _record_stage_calls(monkeypatch):
     return recorded
 
 
+#: 三个"可选能力"阶段由 CLI 开关驱动（注册表 `enabled=`），默认不开。
+_OPTIONAL_STAGES = ("perf", "web", "agentic")
+
+
 def test_cmd_run_executes_stages_in_registry_order(monkeypatch, tmp_path,
                                                    _record_stage_calls, capsys):
-    """端到端接线：真跑一遍 cmd_run 的控制流，各阶段被调用的顺序必须 == 注册表顺序。"""
+    """端到端接线：真跑一遍 cmd_run 的控制流，各阶段被调用的顺序必须 == 注册表顺序。
+
+    三个可选阶段全部**显式开启**，才是完整全序 —— 否则它们会被 `enabled` 跳过
+    （那是另一个用例，见下）。
+    """
     recorded = _record_stage_calls
     monkeypatch.setattr(pm, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(pm, "load_project", lambda _pid: {"env": {"base_url": "http://x"}})
     monkeypatch.setattr(pm, "_load_run_store", lambda: _FakeStore())
 
-    pm.cmd_run(Namespace(id="demo", llm=False, agentic=False))
+    pm.cmd_run(Namespace(id="demo", llm=False, agentic=False,
+                         perf=True, web=True, explore=True))
 
     assert recorded == EXPECTED_RUN_ORDER
     capsys.readouterr()          # 吞掉阶段外的展示类 print，避免污染其它用例输出
+
+
+def test_cmd_run_skips_disabled_optional_stages(monkeypatch, tmp_path,
+                                                _record_stage_calls, capsys):
+    """★ 不开 --perf/--web/--explore 时，那三个阶段**根本不被调用**。
+
+    这是"未执行 ≠ 0 秒"在流水线层面的落点：跳过发生在注册表 `enabled` 上，
+    而不是让阶段"进去先 return"（后者在耗时统计里与"跑得飞快"无法区分）。
+    """
+    recorded = _record_stage_calls
+    monkeypatch.setattr(pm, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(pm, "load_project", lambda _pid: {"env": {"base_url": "http://x"}})
+    monkeypatch.setattr(pm, "_load_run_store", lambda: _FakeStore())
+
+    pm.cmd_run(Namespace(id="demo", llm=False, agentic=False))   # 三个开关都不给
+
+    expected = [n for n in EXPECTED_RUN_ORDER if n not in _OPTIONAL_STAGES]
+    assert recorded == expected, "未开启的可选阶段不应被执行"
+    assert not (set(recorded) & set(_OPTIONAL_STAGES))
+    capsys.readouterr()
 
 
 def test_cmd_regression_executes_stages_in_registry_order(monkeypatch, tmp_path,

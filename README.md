@@ -241,7 +241,8 @@ software_testing_agent/
 
 ### 4.9 回溯与对比
 
-- `artifacts/run_meta.json` 记录本次运行的模式与注入情况（`llm / agentic / lessons_injected / quality / focus / ...`）。
+- `artifacts/run_meta.json` 记录本次运行的模式与注入情况
+  （`llm / agentic / lessons_injected / quality / focus / timing / ...`）。
   增量更新走 `_merge_run_meta()`，**整体覆盖会把上次的性能安全、Web 结论抹掉**。
 - 跨项目看板：一键汇总各项目最近一次回归、性能安全与 Web 冒烟的三组门禁状态。
 
@@ -265,6 +266,21 @@ software_testing_agent/
 - 用法：`python project_manager.py explore <id>` 或 `run <id> --explore`；
   mission 放项目目录下 `mission.yaml`（格式见 `missions/README.md`），
   可用 `STA_AGENT_PYTHON` 指向装有基座依赖的独立解释器、`STA_EXPLORE_TIMEOUT` 控制墙钟上限。
+
+### 4.11 效率口径（`extensions/common/timing.py`，§10 #2）
+
+需求写着"提升测试效率"，此前没有任何测量方式 —— 那只是一句口号。现在它有一个**可自动算**
+的口径，且**测不到的部分被写死在代码里**：
+
+- **口径**：一次 `run` 的**进程内墙钟耗时**，按阶段分解（明细 + 合计）。范围 `需求 → 报告生成`；
+  `report` 阶段自身渲染耗时不计入（那正是渲染本卡片的时刻，无法预知自己）。
+- **三条纪律**：未执行 ≠ 0 秒（未开启的阶段记 `None` 并落 `skipped`）/ 失败阶段照实计时 /
+  一个阶段都没测到则合计为 `None`（**算不出就不猜**）。
+- **明确不测**：`人力节省 / 人工替代率`（需外部工时基线）与 `质量`（耗时短 ≠ 效率高）。
+  这两项逐条列进载荷的 `not_measured`，报告卡片上也会写明 —— **留白会被读成"这个数应该能算"**。
+- **落点**：`artifacts/run_meta.json` 的 `timing` 字段 + 报告「效率口径」卡片 +
+  CLI 收尾一行摘要。可选阶段的开关声明在注册表的 `Stage.enabled` 上（而非"阶段体内先 `return`"），
+  这样"本次没跑"才不会在耗时表里显示成"跑得飞快"。
 
 ---
 
@@ -555,6 +571,7 @@ python extensions/reporting/gate_notify.py --dry-run --project mall-admin --fail
 | 13 | **降级要出声，且"未执行"绝不渲染成绿灯** | 接进来的智能体能力只要"跑不动就悄悄跳过"，整套防假绿体系就在最不确定的一环破功。所以：① 不可用要**降级**（不是失败）并写明**枚举化原因**（缺 key / 超时 / 异常 / 未配置）；② 契约里只有显式 `status == "ok"` 才算"跑了"，缺字段一律不算；③ 消费侧**跑前清旧产物**（否则崩溃会被上一轮成功伪装成本轮）；④ 报告与 `run_meta` 照实写"已降级 + 原因"，退出码区分「未执行(3)」与「失败(1)」。守护见 `tests/test_agentic_contract.py` / `test_agentic_entry.py` / `test_agentic_wiring.py` |
 | 14 | **阶段顺序靠显式依赖，不靠书写位置** | 流水线里"`diff` 必须在 `snapshot` 之前"这类约束，一旦只靠**代码顺序 + 注释**维持，任何一次"顺手调个位置"都会静默破坏它 —— 结论永远变成"没有新增失败"，且**没有任何测试会红**。所以阶段顺序收敛成注册表（`name` / `requires` / `run`，`extensions/common/pipeline.py`），按**稳定拓扑排序**执行：改顺序 = 改 `requires`，依赖不满足**当场报错**（成环也报错并点名阶段）；等价性断言（解析顺序 == 重构前真实顺序）钉住"重构没有偷偷改行为"。守护见 `tests/test_pipeline_registry.py` |
 | 15 | **依赖的上界要有人负责；"跑不动"的测试不许用 `--ignore` 盖住** | 传递依赖的**开区间下界**（`mcp>=1.9.2`，无上界）等于没人管主版本：锁文件只能记录"当时恰好是什么"，阻止不了一次重新解析。本仓库因此真实踩过——`mcp` 漂到 2.x 后 `main.py` 导入即失败，而 `ci.yml` 用 `--ignore` 把受影响的测试挡掉，于是**"CI 全绿"与"主程序根本起不来"同时成立**。所以：① 直接声明会传染的适配器，并让它停在一个**上游已自己声明上界**的版本（`langchain-mcp-adapters>=0.3.2`，见 `pyproject.toml`）；② 每条 `--ignore` 都必须写出原因，它表达的是"这个作业跑不动它"，不是"它不重要"。守护见 `tests/test_dependency_bounds.py` |
+| 16 | **"效率"只报机器侧可测的部分，且"没跑"绝不显示成"跑得飞快"** | 一句"提升测试效率"如果不能验收，就只是口号。所以口径定死为**进程内墙钟按阶段分解**（`extensions/common/timing.py`，`SPEC=timing/1`），并守住三条：① **未执行 ≠ 0 秒** —— 本次没开启的阶段记 `None` 并落进 `skipped`，绝不用 `0.000` 冒充（同第 6 条的"未执行不是绿"）；② **失败阶段照实计时** —— 抹掉最慢的失败路径只会让数字更好看；③ **算不出的不猜** —— 一个阶段都没测到则合计为 `None`。**测不到的必须写出来**：`NOT_MEASURED` 逐条声明"人力节省/人工替代率（需外部工时基线）"与"质量（耗时短 ≠ 效率高）"不测 —— 留白会被读成"这个数应该能算"。为此注册表新增 `Stage.enabled`（开关写在**声明处**，判否整段跳过）与 `on_stage` 结束后钩子。守护见 `tests/test_timing.py` / `test_pipeline_registry.py` |
 
 > 第 9 条的两个落点：`print` 负责**给人看的结果呈现**（`list` 表格、`defects` 的 Markdown、`--json` 载荷），
 > 日志负责**排障用的诊断**（进度、判定、降级、异常）。这是**两种受众**——所以代码里仍有 `print`，
